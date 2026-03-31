@@ -1,20 +1,30 @@
-"""Upload videos to the signed-in user's Google Drive (OAuth 2.0).
+"""Google Drive uploads using OAuth from `.streamlit/secrets.toml`.
 
-Place a Google Cloud OAuth *Desktop app* client JSON next to this project as
-`credentials.json`. Run `python setup_drive_auth.py` once in a terminal to open
-the browser and create `token.json`.
+Put OAuth data under `[google_drive]`:
+
+- `credentials_json` — JSON string of the Google OAuth client (Desktop app), same as `credentials.json`.
+- `token_json` — JSON string of the user token, same as `token.json`.
+
+Optional: `folder_id` — default upload folder (see `app._drive_folder_id`).
+
+Fallback files: `credentials.json` / `token.json` in the project root.
+
+Run `python setup_drive_auth.py` once to open the browser and save the token into secrets.
 """
 
 from __future__ import annotations
 
 import io
+import json
 import os
 from pathlib import Path
+import tomllib
 from typing import Any
+
+import tomli_w
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
@@ -22,6 +32,7 @@ SCOPES = ("https://www.googleapis.com/auth/drive.file",)
 
 _DEFAULT_CREDS = Path(__file__).resolve().parent / "credentials.json"
 _DEFAULT_TOKEN = Path(__file__).resolve().parent / "token.json"
+_DEFAULT_SECRETS = Path(__file__).resolve().parent / ".streamlit" / "secrets.toml"
 
 
 def _credentials_path() -> Path:
@@ -32,18 +43,139 @@ def _token_path() -> Path:
     return Path(os.environ.get("GOOGLE_OAUTH_TOKEN", _DEFAULT_TOKEN))
 
 
-def get_drive_credentials() -> Credentials | None:
-    """Load or refresh OAuth credentials; returns None if token file is missing."""
-    token_path = _token_path()
-    creds_path = _credentials_path()
-    if not token_path.is_file():
+def _secrets_path() -> Path:
+    env = os.environ.get("STREAMLIT_SECRETS_PATH")
+    if env:
+        return Path(env)
+    return _DEFAULT_SECRETS
+
+
+def _load_google_drive_block() -> dict[str, Any]:
+    """Load `[google_drive]` from Streamlit secrets or `.streamlit/secrets.toml`."""
+    try:
+        import streamlit as st
+
+        if hasattr(st, "secrets"):
+            gd = st.secrets.get("google_drive")
+            if gd is not None:
+                return dict(gd)
+    except Exception:
+        pass
+
+    path = _secrets_path()
+    if not path.is_file():
+        return {}
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    except Exception:
+        return {}
+    block = data.get("google_drive")
+    return dict(block) if isinstance(block, dict) else {}
+
+
+def _parse_json_field(value: Any) -> dict[str, Any] | None:
+    if value is None:
         return None
-    creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            parsed = json.loads(s)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def get_oauth_client_config() -> dict[str, Any] | None:
+    """OAuth client JSON (`installed` or `web`) from secrets or credentials.json."""
+    cfg = _parse_json_field(_load_google_drive_block().get("credentials_json"))
+    if cfg is not None:
+        return cfg
+    creds_path = _credentials_path()
+    if creds_path.is_file():
+        try:
+            with creds_path.open("r", encoding="utf-8") as f:
+                parsed = json.load(f)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+    return None
+
+
+def merge_google_drive_secrets(
+    *,
+    credentials_json_str: str | None = None,
+    token_json_str: str | None = None,
+) -> None:
+    """Merge keys into `[google_drive]` in `.streamlit/secrets.toml` (keeps other sections)."""
+    path = _secrets_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    data: dict[str, Any] = {}
+    if path.is_file():
+        try:
+            with path.open("rb") as f:
+                data = tomllib.load(f)
+        except Exception:
+            data = {}
+
+    gd = data.get("google_drive")
+    if not isinstance(gd, dict):
+        gd = {}
+
+    if credentials_json_str is not None:
+        gd["credentials_json"] = credentials_json_str
+    if token_json_str is not None:
+        gd["token_json"] = token_json_str
+
+    for key in ("credentials_json", "token_json"):
+        val = gd.get(key)
+        if isinstance(val, dict):
+            gd[key] = json.dumps(val, separators=(",", ":"))
+
+    if not str(gd.get("credentials_json") or "").strip():
+        cfg = get_oauth_client_config()
+        if cfg:
+            gd["credentials_json"] = json.dumps(cfg, separators=(",", ":"))
+
+    data["google_drive"] = gd
+
+    with path.open("wb") as f:
+        tomli_w.dump(data, f)
+
+
+def _persist_token_json(token_json_str: str) -> None:
+    merge_google_drive_secrets(token_json_str=token_json_str)
+
+
+def get_drive_credentials() -> Credentials | None:
+    """Load/refresh OAuth credentials from secrets.toml (or token.json fallback)."""
+    block = _load_google_drive_block()
+    token_json = _parse_json_field(block.get("token_json"))
+
+    if token_json is None and _token_path().is_file():
+        try:
+            with _token_path().open("r", encoding="utf-8") as f:
+                token_json = json.load(f)
+        except Exception:
+            token_json = None
+
+    if not token_json:
+        return None
+
+    creds = Credentials.from_authorized_user_info(token_json, SCOPES)
     if creds.valid:
         return creds
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        token_path.write_text(creds.to_json(), encoding="utf-8")
+        new_json = creds.to_json()
+        _persist_token_json(new_json)
+        _token_path().write_text(new_json, encoding="utf-8")
         return creds
     return None
 
@@ -71,8 +203,8 @@ def upload_video_to_google_drive(
         return {
             "ok": False,
             "error": (
-                "Drive not authorized. Add credentials.json, run "
-                "`python setup_drive_auth.py` once, then retry."
+                "Drive not authorized. Add [google_drive] credentials_json and token_json "
+                "to .streamlit/secrets.toml, or run `python setup_drive_auth.py`, then retry."
             ),
         }
 

@@ -118,6 +118,11 @@ def generate_random_timeframe_seconds(
 
 def _drive_folder_id() -> str | None:
     try:
+        gd = st.secrets.get("google_drive")
+        if isinstance(gd, dict):
+            fid = gd.get("folder_id")
+            if fid:
+                return str(fid)
         return st.secrets.get("GOOGLE_DRIVE_FOLDER_ID", None)
     except Exception:
         return None
