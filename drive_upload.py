@@ -160,7 +160,11 @@ def _should_refresh_token(creds: Credentials, buffer_seconds: int = 120) -> bool
         return True
     if creds.expiry is None:
         return False
-    return creds.expiry <= datetime.now(timezone.utc) + timedelta(seconds=buffer_seconds)
+    expiry = creds.expiry
+    if expiry.tzinfo is None:
+        # Google libs can provide naive UTC datetimes in some environments.
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    return expiry <= datetime.now(timezone.utc) + timedelta(seconds=buffer_seconds)
 
 
 def get_drive_credentials() -> Credentials | None:
