@@ -21,6 +21,24 @@ from drive_upload import upload_video_to_google_drive
 # --- Response generators (wrapped as requested) ---
 NOT_IN_VIDEO_RESPONSE = "This content does not exist in your video"
 
+import json
+import os
+
+# Read token_json from Streamlit secrets
+token_json_str = st.secrets.get("google_drive", {}).get("token_json", "")
+
+if token_json_str:
+    # Ensure output directory exists
+    # os.makedirs(os.path.dirname("token.json"), exist_ok=True)
+    # Write the token_json string to token.json file
+    with open("token.json", "w") as f:
+        # If the string is already a JSON object (most likely), pretty-print it
+        try:
+            f.write(json.dumps(json.loads(token_json_str), indent=2))
+        except Exception:
+            # If not valid JSON, write as is
+            f.write(token_json_str)
+
 
 def _jump_on_click(**kwargs: Any) -> None:
     """Use **kwargs (not args=) so each button keeps its own a,b — args= can break with multiple buttons."""
