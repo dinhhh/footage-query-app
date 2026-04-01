@@ -20,7 +20,6 @@ import os
 from pathlib import Path
 import tomllib
 from typing import Any
-from datetime import datetime, timedelta, timezone
 
 import tomli_w
 
@@ -154,19 +153,6 @@ def _persist_token_json(token_json_str: str) -> None:
     merge_google_drive_secrets(token_json_str=token_json_str)
 
 
-def _should_refresh_token(creds: Credentials, buffer_seconds: int = 120) -> bool:
-    """Refresh when invalid or access token is close to expiry."""
-    if not creds.valid:
-        return True
-    if creds.expiry is None:
-        return False
-    expiry = creds.expiry
-    if expiry.tzinfo is None:
-        # Google libs can provide naive UTC datetimes in some environments.
-        expiry = expiry.replace(tzinfo=timezone.utc)
-    return expiry <= datetime.now(timezone.utc) + timedelta(seconds=buffer_seconds)
-
-
 def get_drive_credentials() -> Credentials | None:
     """Load/refresh OAuth credentials from secrets.toml (or token.json fallback)."""
     block = _load_google_drive_block()
@@ -183,14 +169,13 @@ def get_drive_credentials() -> Credentials | None:
         return None
 
     creds = Credentials.from_authorized_user_info(token_json, SCOPES)
-    if creds.refresh_token and _should_refresh_token(creds):
+    if creds.valid:
+        return creds
+    if creds.expired and creds.refresh_token:
         creds.refresh(Request())
         new_json = creds.to_json()
         _persist_token_json(new_json)
         _token_path().write_text(new_json, encoding="utf-8")
-        return creds
-
-    if creds.valid:
         return creds
     return None
 

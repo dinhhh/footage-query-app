@@ -147,8 +147,6 @@ def _drive_folder_id() -> str | None:
 
 
 def _init_session() -> None:
-    if "uploader_key" not in st.session_state:
-        st.session_state.uploader_key = 0
     if "chat_order" not in st.session_state:
         st.session_state.chat_order = []
     if "chats" not in st.session_state:
@@ -189,13 +187,14 @@ def _new_chat() -> None:
     st.session_state.active_chat_id = cid
 
 
-def _delete_current_chat() -> None:
-    cid = st.session_state.active_chat_id
+def _delete_chat(cid: str) -> None:
+    if cid not in st.session_state.chats:
+        return
     st.session_state.chat_order = [x for x in st.session_state.chat_order if x != cid]
     del st.session_state.chats[cid]
     if not st.session_state.chat_order:
         _new_chat()
-    else:
+    elif st.session_state.active_chat_id == cid:
         st.session_state.active_chat_id = st.session_state.chat_order[-1]
 
 
@@ -203,8 +202,40 @@ def _apply_chatgpt_css() -> None:
     st.markdown(
         """
         <style>
-            .block-container { padding-top: 1.2rem; max-width: 900px; }
+            .block-container { padding-top: 1.2rem; max-width: none; }
             div[data-testid="stChatMessage"] { border-radius: 12px; }
+            .stSidebar [data-testid="stButton"] > button {
+                border: none !important;
+                background: transparent !important;
+                box-shadow: none !important;
+                border-radius: 12px !important;
+                color: inherit !important;
+                text-align: left !important;
+                justify-content: flex-start !important;
+                padding-left: 0.5rem !important;
+                transition: background-color 0.2s ease, color 0.2s ease;
+            }
+            .stSidebar [data-testid="stButton"] > button > div {
+                justify-content: flex-start !important;
+                text-align: left !important;
+                width: 100%;
+            }
+            .stSidebar [data-testid="stButton"] > button:hover {
+                background: rgba(255, 255, 255, 0.06) !important;
+            }
+            .stSidebar [data-testid="stButton"] > button:focus,
+            .stSidebar [data-testid="stButton"] > button:focus-visible,
+            .stSidebar [data-testid="stButton"] > button:active {
+                outline: none !important;
+                box-shadow: none !important;
+                border: none !important;
+                background: rgba(255, 255, 255, 0.08) !important;
+            }
+            .stSidebar [data-testid="stExpander"] {
+                border: none !important;
+                box-shadow: none !important;
+                background: transparent !important;
+            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -212,7 +243,7 @@ def _apply_chatgpt_css() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Chat", page_icon="💬", layout="centered")
+    st.set_page_config(page_title="Chat", page_icon="💬", layout="wide")
     _apply_chatgpt_css()
     _init_session()
 
@@ -220,25 +251,22 @@ def main() -> None:
         if st.button("➕ New chat", use_container_width=True):
             _new_chat()
             st.rerun()
-        if st.button("🗑️ Delete current chat", use_container_width=True):
-            _delete_current_chat()
-            st.rerun()
 
-        with st.expander("Your chats", expanded=True):
-            for cid in reversed(st.session_state.chat_order):
-                chat = st.session_state.chats[cid]
-                label = chat["title"][:36] + ("…" if len(chat["title"]) > 36 else "")
+        st.markdown("**Your chats**")
+        for cid in reversed(st.session_state.chat_order):
+            chat = st.session_state.chats[cid]
+            if not chat["messages"]:
+                continue
+            label = chat["title"][:36] + ("…" if len(chat["title"]) > 36 else "")
+            c_chat, c_delete = st.columns([6, 1], gap="small")
+            with c_chat:
                 if st.button(label, key=f"tab_{cid}", use_container_width=True):
                     st.session_state.active_chat_id = cid
                     st.rerun()
-
-        st.divider()
-        st.caption("Attach a video, then send a message to upload to Drive and get a time range.")
-        video_file = st.file_uploader(
-            "Video file",
-            type=["mp4", "webm", "mov", "mkv", "avi"],
-            key=f"sidebar_video_{st.session_state.uploader_key}",
-        )
+            with c_delete:
+                if st.button("🧹", key=f"del_{cid}", use_container_width=True):
+                    _delete_chat(cid)
+                    st.rerun()
 
     chat = _active_chat()
 
@@ -268,9 +296,27 @@ def main() -> None:
             )
 
     for msg in chat["messages"]:
-        with st.chat_message(msg["role"]):
+        if msg["role"] == "user":
+            st.markdown(
+                f"""
+                <div style="width:100%; margin: 0.2rem 0 0.45rem 0;">
+                    <div style="
+                        margin-left: auto;
+                        width: fit-content;
+                        max-width: 95%;
+                        background: linear-gradient(180deg, #2b3447 0%, #20283a 100%);
+                        border: 1px solid rgba(255,255,255,0.13);
+                        border-radius: 16px;
+                        padding: 0.7rem 0.9rem;
+                        color: #f1f5f9;
+                    ">{msg["content"]}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
             st.markdown(msg["content"])
-            if msg["role"] == "assistant" and msg.get("timeframe"):
+            if msg.get("timeframe"):
                 a, b = msg["timeframe"]
                 msg_id = _ensure_message_id(msg)
                 c1, c2 = st.columns(2)
@@ -295,15 +341,29 @@ def main() -> None:
                             )
                         else:
                             st.caption("Clip download unavailable (ffmpeg missing).")
-            if msg["role"] == "assistant" and msg.get("drive_link"):
+            if msg.get("drive_link"):
                 st.markdown(f"[Open on Google Drive]({msg['drive_link']})")
 
-    if prompt := st.chat_input("Message…"):
+    chat_input_value = st.chat_input(
+        "Message…",
+        accept_file=True,
+        file_type=["mp4", "webm", "mov", "mkv", "avi"],
+    )
+    if chat_input_value:
+        if isinstance(chat_input_value, str):
+            prompt = chat_input_value
+            attached_files = []
+        else:
+            prompt = getattr(chat_input_value, "text", "") or ""
+            attached_files = list(getattr(chat_input_value, "files", []) or [])
+        video_file = attached_files[0] if attached_files else None
+        user_text = prompt.strip() or "Sent an attachment."
+
         if not chat["messages"]:
-            chat["title"] = (prompt[:48] + "…") if len(prompt) > 48 else prompt
+            chat["title"] = (user_text[:48] + "…") if len(user_text) > 48 else user_text
 
         chat["messages"].append(
-            {"role": "user", "content": prompt, "id": str(uuid.uuid4())}
+            {"role": "user", "content": user_text, "id": str(uuid.uuid4())}
         )
 
         if video_file is not None:
@@ -380,7 +440,6 @@ def main() -> None:
                             "id": str(uuid.uuid4()),
                         }
                     )
-            st.session_state.uploader_key += 1
         else:
             reply = generate_random_text_response(prompt)
             t0, t1 = generate_random_timeframe_seconds()
