@@ -62,7 +62,7 @@ This app needs **OAuth client credentials** (not only a simple API key), because
    - Application type: **Desktop app**.
    - Download the JSON file.
 
-## 4) Put credentials in `.streamlit/secrets.toml` (your format)
+## 4) Put credentials in `.streamlit/secrets.toml` (bootstrap only)
 
 Create/edit `.streamlit/secrets.toml` and keep this exact structure:
 
@@ -74,7 +74,8 @@ token_json = ""
 
 Notes:
 - `credentials_json` is the downloaded OAuth client JSON converted to a single JSON string.
-- Leave `token_json` empty first. It will be generated after OAuth login.
+- `token_json` can be set initially for first startup bootstrap.
+- Refreshed tokens are NOT written back to `.streamlit/secrets.toml`; they are stored locally in `token.json` and `drive_token_cache.json`.
 - Optional:
   - `folder_id = "YOUR_DRIVE_FOLDER_ID"` under `[google_drive]` to upload into a specific folder.
 
@@ -86,7 +87,7 @@ Run one-time auth flow:
 python setup_drive_auth.py
 ```
 
-This opens a browser, asks for Google permission, then saves both credentials and token into `.streamlit/secrets.toml` under `[google_drive]`.
+This opens a browser, asks for Google permission, then saves the token locally (no write to `.streamlit/secrets.toml`).
 
 ## 6) Run the app
 

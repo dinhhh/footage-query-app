@@ -1,13 +1,12 @@
-"""One-time OAuth setup: saves token into `.streamlit/secrets.toml` under [google_drive]."""
-
-import json
+"""One-time OAuth setup: saves token to local cache/token files."""
 
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 from drive_upload import (
     SCOPES,
     get_oauth_client_config,
-    merge_google_drive_secrets,
+    _persist_token_json,
+    _token_path,
 )
 
 
@@ -21,12 +20,9 @@ def main() -> None:
     flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
     creds = flow.run_local_server(port=0)
     token_json = creds.to_json()
-    creds_json = json.dumps(client_config, separators=(",", ":"))
-    merge_google_drive_secrets(
-        credentials_json_str=creds_json,
-        token_json_str=token_json,
-    )
-    print(f"Saved credentials and token to .streamlit/secrets.toml under [google_drive].")
+    _persist_token_json(token_json)
+    _token_path().write_text(token_json, encoding="utf-8")
+    print("Saved token to local cache/token files (no write to Streamlit secrets).")
 
 
 if __name__ == "__main__":

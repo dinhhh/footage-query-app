@@ -21,8 +21,6 @@ from pathlib import Path
 import tomllib
 from typing import Any
 
-import tomli_w
-
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -32,6 +30,7 @@ SCOPES = ("https://www.googleapis.com/auth/drive.file",)
 
 _DEFAULT_CREDS = Path(__file__).resolve().parent / "credentials.json"
 _DEFAULT_TOKEN = Path(__file__).resolve().parent / "token.json"
+_DEFAULT_TOKEN_CACHE = Path(__file__).resolve().parent / "drive_token_cache.json"
 _DEFAULT_SECRETS = Path(__file__).resolve().parent / ".streamlit" / "secrets.toml"
 
 
@@ -41,6 +40,10 @@ def _credentials_path() -> Path:
 
 def _token_path() -> Path:
     return Path(os.environ.get("GOOGLE_OAUTH_TOKEN", _DEFAULT_TOKEN))
+
+
+def _token_cache_path() -> Path:
+    return Path(os.environ.get("GOOGLE_OAUTH_TOKEN_CACHE", _DEFAULT_TOKEN_CACHE))
 
 
 def _secrets_path() -> Path:
@@ -107,63 +110,35 @@ def get_oauth_client_config() -> dict[str, Any] | None:
     return None
 
 
-def merge_google_drive_secrets(
-    *,
-    credentials_json_str: str | None = None,
-    token_json_str: str | None = None,
-) -> None:
-    """Merge keys into `[google_drive]` in `.streamlit/secrets.toml` (keeps other sections)."""
-    path = _secrets_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    data: dict[str, Any] = {}
-    if path.is_file():
-        try:
-            with path.open("rb") as f:
-                data = tomllib.load(f)
-        except Exception:
-            data = {}
-
-    gd = data.get("google_drive")
-    if not isinstance(gd, dict):
-        gd = {}
-
-    if credentials_json_str is not None:
-        gd["credentials_json"] = credentials_json_str
-    if token_json_str is not None:
-        gd["token_json"] = token_json_str
-
-    for key in ("credentials_json", "token_json"):
-        val = gd.get(key)
-        if isinstance(val, dict):
-            gd[key] = json.dumps(val, separators=(",", ":"))
-
-    if not str(gd.get("credentials_json") or "").strip():
-        cfg = get_oauth_client_config()
-        if cfg:
-            gd["credentials_json"] = json.dumps(cfg, separators=(",", ":"))
-
-    data["google_drive"] = gd
-
-    with path.open("wb") as f:
-        tomli_w.dump(data, f)
-
-
 def _persist_token_json(token_json_str: str) -> None:
-    merge_google_drive_secrets(token_json_str=token_json_str)
+    # Intentionally avoid writing refreshed tokens back to Streamlit secrets.
+    cache_path = _token_cache_path()
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(token_json_str, encoding="utf-8")
 
 
 def get_drive_credentials() -> Credentials | None:
-    """Load/refresh OAuth credentials from secrets.toml (or token.json fallback)."""
-    block = _load_google_drive_block()
-    token_json = _parse_json_field(block.get("token_json"))
+    """Load/refresh OAuth credentials with one-time secrets bootstrap.
 
-    if token_json is None and _token_path().is_file():
+    Priority:
+    1) `drive_token_cache.json`
+    2) bootstrap `token_json` from Streamlit secrets (first run only), then persist to cache
+    """
+    token_json: dict[str, Any] | None = None
+
+    cache_path = _token_cache_path()
+    if cache_path.is_file():
         try:
-            with _token_path().open("r", encoding="utf-8") as f:
+            with cache_path.open("r", encoding="utf-8") as f:
                 token_json = json.load(f)
         except Exception:
             token_json = None
+
+    if token_json is None:
+        block = _load_google_drive_block()
+        token_json = _parse_json_field(block.get("token_json"))
+        if token_json:
+            _persist_token_json(json.dumps(token_json, separators=(",", ":")))
 
     if not token_json:
         return None

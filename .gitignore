@@ -1,5 +1,6 @@
 credentials.json
 token.json
+drive_token_cache.json
 .streamlit/secrets.toml
 venv/
 __pycache__/
