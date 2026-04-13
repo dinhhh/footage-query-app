@@ -204,8 +204,7 @@ def _apply_css() -> None:
             [data-testid="stHorizontalBlock"] > div:last-child {
                 max-height: calc(100vh - 140px) !important;
                 overflow-y: auto !important;
-                padding-bottom: 140px !important;
-                scroll-behavior: smooth !important;
+                padding-bottom: 10px !important;
             }
             /* LEFT video column: no scroll, sticks to top */
             [data-testid="stHorizontalBlock"] > div:first-child {
@@ -370,56 +369,31 @@ def main() -> None:
                 if msg.get("drive_link"):
                     st.markdown(f"[Open on Google Drive]({msg['drive_link']})")
 
-        st.markdown('<div id="chat-bottom-anchor"></div>', unsafe_allow_html=True)
-    # ── Auto-scroll: reliably run inside an HTML component ───────────────────
-    st.components.v1.html(
+    # ── Auto-scroll: inject directly into page head so it always runs ────────
+    st.markdown(
         """
         <script>
         (function() {
-            function autoScroll() {
-                const parentDoc = window.parent.document;
-
-                const chatCol = parentDoc.querySelector(
+            function scrollChat() {
+                var col = document.querySelector(
                     '[data-testid="stHorizontalBlock"] > div:last-child'
                 );
-
-                const anchor = parentDoc.getElementById("chat-bottom-anchor");
-
-                if (chatCol && anchor) {
-                    const anchorTop = anchor.getBoundingClientRect().top;
-                    const chatTop = chatCol.getBoundingClientRect().top;
-                    const target = chatCol.scrollTop + (anchorTop - chatTop) - 180;
-                    chatCol.scrollTo({
-                        top: Math.max(target, 0),
-                        behavior: "smooth"
-                    });
+                if (col) {
+                    col.scrollTop = col.scrollHeight - 120;
                     return;
                 }
-
-                if (chatCol) {
-                    chatCol.scrollTo({
-                        top: Math.max(chatCol.scrollHeight - chatCol.clientHeight - 180, 0),
-                        behavior: "smooth"
-                    });
-                    return;
-                }
-
-                const main = parentDoc.querySelector('[data-testid="stMain"]');
-                if (main) {
-                    main.scrollTo({
-                        top: Math.max(main.scrollHeight - main.clientHeight - 180, 0),
-                        behavior: "smooth"
-                    });
-                }
+                // fallback when no video (single container)
+                var main = document.querySelector('[data-testid="stMain"]');
+                if (main) main.scrollTop = main.scrollHeight - 120;
             }
-
-            setTimeout(autoScroll, 50);
-            setTimeout(autoScroll, 200);
-            setTimeout(autoScroll, 500);
+            // Run immediately and again after paint
+            scrollChat();
+            setTimeout(scrollChat, 100);
+            setTimeout(scrollChat, 300);
         })();
         </script>
         """,
-        height=0,
+        unsafe_allow_html=True,
     )
 
     # ── Handle input ──────────────────────────────────────────────────────────
