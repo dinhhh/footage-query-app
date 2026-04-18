@@ -25,6 +25,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
+from core_backend.video_pipeline import ingest_raw_video_direct
 
 SCOPES = ("https://www.googleapis.com/auth/drive.file",)
 
@@ -173,6 +174,14 @@ def upload_video_to_google_drive(
     Returns:
         dict with keys: ok (bool), file_id, web_view_link, web_content_link, name, error (optional).
     """
+
+    # call qua backend process video
+    output_filename = filename
+
+    # Open the file in 'wb' (write binary) mode
+    with open(output_filename, "wb") as f:
+        f.write(file_bytes)
+    ingest_raw_video_direct(output_filename, chunk_duration= 45)
     creds = get_drive_credentials()
     if creds is None:
         return {
