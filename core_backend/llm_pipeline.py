@@ -10,7 +10,7 @@ from .video_pipeline import extract_video_clip
 # 1. Configuration & Setup
 # ---------------------------------------------------------
 # Replace with your actual Google API key
-os.environ["GEMINI_API_KEY"] = "AIzaSyBk9hw2fnmEXDksclfnmOd9xaNvP86vVgo" # input your API key here
+os.environ["GEMINI_API_KEY"] = "" # input your API key here
 client = genai.Client()
 
 # Initialize ChromaDB
