@@ -168,23 +168,70 @@ def _neutralize_first_list_marker_line(text: str) -> str:
     return "\n".join(lines)
 
 
-def _markdown_chat_fragment(s: str) -> None:
-    """Render a text chunk without turning leading '- ' into a list bullet (e.g. column splits)."""
+def _markdown_chat_fragment(
+    s: str,
+    start_time: int | None,
+    end_time: int | None,
+    chat: dict[str, Any] | None,
+    *,
+    download_key: str | None = None,
+) -> None:
+    """Render markdown first, then an optional link-styled clip download (same ffmpeg cut)."""
     m = _WS_LINE.match(s)
-    # remove ": " at first of string s
     if s.startswith(": "):
         s = s[2:]
     if not m:
         st.markdown(s)
+        _clip_download_link_after_markdown(
+            start_time, end_time, chat, download_key
+        )
         return
     indent = m.group(1)
     rest = s[len(indent) :]
     if rest.startswith("- ") or rest.startswith("* "):
         rest = "\u200b" + rest
     st.markdown(indent + rest)
+    _clip_download_link_after_markdown(
+        start_time, end_time, chat, download_key
+    )
 
 
-def render_reply_with_seek_links(reply: str, msg_id: str) -> None:
+def _clip_download_link_after_markdown(
+    start_time: int | None,
+    end_time: int | None,
+    chat: dict[str, Any] | None,
+    download_key: str | None,
+) -> None:
+    if (
+        download_key is None
+        or chat is None
+        or start_time is None
+        or end_time is None
+        or not chat.get("video_bytes")
+    ):
+        return
+    mime = chat.get("video_mime") or "video/mp4"
+    clip_bytes = build_video_clip_bytes(
+        chat["video_bytes"], int(start_time), int(end_time), mime
+    )
+    cid = st.session_state.active_chat_id
+    if clip_bytes is not None:
+        st.download_button(
+            label="Download this video segment",
+            data=clip_bytes,
+            file_name=f"clip_{start_time}_{end_time}.mp4",
+            mime=mime,
+            key=f"dl_md_{cid}_{download_key}",
+            type="tertiary",
+            width="content",
+            use_container_width=False,
+            help=f"Download segment {start_time}s–{end_time}s",
+        )
+    else:
+        st.caption("Clip unavailable (ffmpeg)")
+
+
+def render_reply_with_seek_links(reply: str, msg_id: str, chat) -> None:
     """Show assistant reply; plain timestamps become play/seek controls (like render_play_button)."""
     reply = _neutralize_first_list_marker_line(reply)
     if not TIMESTAMP_PATTERN.search(reply):
@@ -197,19 +244,24 @@ def render_reply_with_seek_links(reply: str, msg_id: str) -> None:
             continue
         segs = _drop_leading_list_marker_column(_segment_line(line))
         if len(segs) == 1 and segs[0][0] == "text":
-            _markdown_chat_fragment(segs[0][1])
+            _markdown_chat_fragment(
+                segs[0][1], None, None, chat, download_key=None,
+            )
             continue
-        # Column weights: timestamp cols need a stable share so labels stay one line (was weight 2 → squeezed).
-        weights: list[int] = []
-        weights.append(10)
-        weights.append(35)
+        weights: list[int] = [15, 35]
         cols = st.columns(weights, gap="small", vertical_alignment="top")
+        last_a: int | None = None
+        last_b: int | None = None
         for ci, seg in enumerate(segs):
             with cols[ci]:
                 if seg[0] == "text":
-                    _markdown_chat_fragment(seg[1])
+                    dk = f"{msg_id}_L{li}_T{ci}" if last_a is not None else None
+                    _markdown_chat_fragment(
+                        seg[1], last_a, last_b, chat, download_key=dk,
+                    )
                 else:
                     _, label, a, b = seg
+                    last_a, last_b = int(a), int(b)
                     render_play_button(
                         int(a),
                         int(b),
@@ -403,6 +455,19 @@ def _apply_css() -> None:
                 outline: 2px solid #60a5fa !important;
                 outline-offset: 2px !important;
             }
+            /* Clip download after markdown; key prefix dl_md_ */
+            [class*="st-key-dl_md_"] button {
+                color: #34d399 !important;
+                text-decoration: underline !important;
+                font-weight: 400 !important;
+                padding: 0 !important;
+                min-height: unset !important;
+                justify-content: flex-start !important;
+            }
+            [class*="st-key-dl_md_"] button:hover {
+                color: #6ee7b7 !important;
+                background: transparent !important;
+            }
             /* Timestamp + description rows: top-align; no per-column scroll / max-height */
             [data-testid="stHorizontalBlock"] > div:last-child div[data-testid="stHorizontalBlock"] {
                 align-items: flex-start !important;
@@ -562,7 +627,7 @@ def main() -> None:
                 msg_id = _ensure_message_id(msg)
                 content = msg.get("content") or ""
                 if msg.get("timeframes") is not None:
-                    render_reply_with_seek_links(content, msg_id)
+                    render_reply_with_seek_links(content, msg_id, chat)
                     # if msg["timeframes"] and chat.get("video_bytes"):
                     #     with st.expander("Download clip segments"):
                     #         for idx, (a, b) in enumerate(msg["timeframes"], start=1):
