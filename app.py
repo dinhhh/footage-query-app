@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import mimetypes
 import random
+import re
 import subprocess
 import tempfile
 import uuid
@@ -41,14 +42,180 @@ def _play_on_click(**kwargs: Any) -> None:
     st.session_state[f"seek_range_{cid}"] = (a, b, count)
 
 
-def render_play_button(a: int, b: int, msg_id: str) -> None:
+def render_play_button(
+    a: int,
+    b: int,
+    msg_id: str,
+    *,
+    label: str | None = None,
+) -> None:
+    """Text styled as an inline link; uses the same seek callback as before."""
     cid = st.session_state.active_chat_id
+    display = label if label is not None else f"{a}:{b}"
     st.button(
-        f"\u25b6 [{a}:{b}]",
-        key=f"play_{cid}_{msg_id}",
+        display,
+        key=f"tsseek_{cid}_{msg_id}",
         on_click=_play_on_click,
         kwargs={"a": a, "b": b},
+        type="tertiary",
+        help="Seek video to this range",
+        width="content",
+        use_container_width=False,
     )
+
+
+# Matches MM:SS, HH:MM:SS, optional ranges, optional **bold** wrappers.
+TIMESTAMP_PATTERN = re.compile(
+    r"(?:\*\*)?(\d{1,2}:\d{2}(?::\d{2})?)(?:-(\d{1,2}:\d{2}(?::\d{2})?))?(?:\*\*)?"
+)
+
+
+def _ts_part_to_seconds(part: str) -> int:
+    nums = [int(p) for p in part.split(":")]
+    if len(nums) == 3:
+        h, m, s = nums
+        return h * 3600 + m * 60 + s
+    if len(nums) == 2:
+        m, s = nums
+        return m * 60 + s
+    raise ValueError(f"Unexpected timestamp format: {part}")
+
+
+def _match_to_seconds_range(m: re.Match) -> tuple[int, int]:
+    a = _ts_part_to_seconds(m.group(1))
+    if m.group(2):
+        b = _ts_part_to_seconds(m.group(2))
+        return a, b
+    return a, a
+
+
+def extract_timestamps(text: str) -> list[tuple[int, int]]:
+    """
+    All timestamp ranges in document order, as (start_sec, end_sec).
+    Single times use the same value for start and end.
+    """
+    out: list[tuple[int, int]] = []
+    for m in TIMESTAMP_PATTERN.finditer(text):
+        out.append(_match_to_seconds_range(m))
+    return out
+
+
+def _segment_line(line: str) -> list[tuple[Any, ...]]:
+    """Split one line into ('text', str) and ('seek', label, a, b) pieces."""
+    segs: list[tuple[Any, ...]] = []
+    last = 0
+    for m in TIMESTAMP_PATTERN.finditer(line):
+        if m.start() > last:
+            segs.append(("text", line[last : m.start()]))
+        a, b = _match_to_seconds_range(m)
+        label = m.group(1) + (f"-{m.group(2)}" if m.group(2) else "")
+        segs.append(("seek", label, a, b))
+        last = m.end()
+    if last < len(line):
+        segs.append(("text", line[last:]))
+    return segs
+
+
+_LEADING_JUNK = re.compile(r"^[\s\u200b\u200c\u200d\ufeff]+")
+
+
+def _strip_leading_invisible(s: str) -> str:
+    """Remove spaces / ZWSP / BOM so fragments like '\\u200b- **' classify as list markup."""
+    return _LEADING_JUNK.sub("", s or "")
+
+
+def _is_leading_list_marker_only_fragment(s: str) -> bool:
+    """True when a split text chunk is only list markup (e.g. '-', '- ', '- **'), not real words."""
+    t = _strip_leading_invisible(s)
+    if not t:
+        return True
+    if re.search(r"[A-Za-z0-9]", t):
+        return False
+    if any(c in "()[]{}" for c in t):
+        return False
+    # ASCII hyphen, unicode dashes, bullets, leading * for list/emphasis
+    if not re.match(r"^[-–—•*‧·]", t):
+        return False
+    return len(t) <= 24
+
+
+def _drop_leading_list_marker_column(segs: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
+    """Remove first column when it is only '-'/bullet/bold opener so the row starts at the timestamp."""
+    if len(segs) < 2 or segs[0][0] != "text":
+        return segs
+    if _is_leading_list_marker_only_fragment(segs[0][1]):
+        return segs[1:]
+    return segs
+
+
+_WS_LINE = re.compile(r"^(\s*)")
+
+
+def _neutralize_first_list_marker_line(text: str) -> str:
+    """Hide the first markdown list bullet (-/*) so the opening line isn't a list item."""
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        m = _WS_LINE.match(line)
+        if not m:
+            continue
+        indent = m.group(1)
+        rest = line[len(indent) :]
+        if rest.startswith("- ") or rest.startswith("* "):
+            lines[i] = indent + "\u200b" + rest
+            break
+    return "\n".join(lines)
+
+
+def _markdown_chat_fragment(s: str) -> None:
+    """Render a text chunk without turning leading '- ' into a list bullet (e.g. column splits)."""
+    m = _WS_LINE.match(s)
+    # remove ": " at first of string s
+    if s.startswith(": "):
+        s = s[2:]
+    if not m:
+        st.markdown(s)
+        return
+    indent = m.group(1)
+    rest = s[len(indent) :]
+    if rest.startswith("- ") or rest.startswith("* "):
+        rest = "\u200b" + rest
+    st.markdown(indent + rest)
+
+
+def render_reply_with_seek_links(reply: str, msg_id: str) -> None:
+    """Show assistant reply; plain timestamps become play/seek controls (like render_play_button)."""
+    reply = _neutralize_first_list_marker_line(reply)
+    if not TIMESTAMP_PATTERN.search(reply):
+        st.markdown(reply)
+        return
+
+    for li, line in enumerate(reply.split("\n")):
+        if line == "":
+            st.markdown("")
+            continue
+        segs = _drop_leading_list_marker_column(_segment_line(line))
+        if len(segs) == 1 and segs[0][0] == "text":
+            _markdown_chat_fragment(segs[0][1])
+            continue
+        # Column weights: timestamp cols need a stable share so labels stay one line (was weight 2 → squeezed).
+        weights: list[int] = []
+        weights.append(10)
+        weights.append(35)
+        cols = st.columns(weights, gap="small", vertical_alignment="top")
+        for ci, seg in enumerate(segs):
+            with cols[ci]:
+                if seg[0] == "text":
+                    _markdown_chat_fragment(seg[1])
+                else:
+                    _, label, a, b = seg
+                    render_play_button(
+                        int(a),
+                        int(b),
+                        f"{msg_id}_L{li}_C{ci}",
+                        label=label,
+                    )
 
 
 @st.cache_data(show_spinner=False)
@@ -154,6 +321,7 @@ def _new_chat_data() -> dict[str, Any]:
         "video_seek_sec": 0,
         "video_end_sec": None,
         "video_seek_generation": 0,
+        "session_history": [],
     }
 
 
@@ -215,6 +383,42 @@ def _apply_css() -> None:
                 max-height: calc(100vh - 140px) !important;
                 overflow: hidden !important;
             }
+            /* Inline timestamp “links” (tertiary seek buttons); key prefix tsseek_ */
+            [class*="st-key-tsseek_"] button {
+                color: #60a5fa !important;
+                text-decoration: underline !important;
+                text-underline-offset: 0.12em !important;
+                font-weight: 400 !important;
+                padding: 0 0.25rem !important;
+                min-height: unset !important;
+                height: auto !important;
+                line-height: 1.35 !important;
+                white-space: nowrap !important;
+            }
+            [class*="st-key-tsseek_"] button:hover {
+                color: #93c5fd !important;
+                background: transparent !important;
+            }
+            [class*="st-key-tsseek_"] button:focus-visible {
+                outline: 2px solid #60a5fa !important;
+                outline-offset: 2px !important;
+            }
+            /* Timestamp + description rows: top-align; no per-column scroll / max-height */
+            [data-testid="stHorizontalBlock"] > div:last-child div[data-testid="stHorizontalBlock"] {
+                align-items: flex-start !important;
+            }
+            [data-testid="stHorizontalBlock"] > div:last-child [data-testid="column"] {
+                overflow: visible !important;
+                max-height: none !important;
+            }
+            [data-testid="stHorizontalBlock"] > div:last-child [data-testid="column"] [data-testid="stMarkdownContainer"] {
+                overflow: visible !important;
+                max-height: none !important;
+            }
+            [data-testid="stHorizontalBlock"] > div:last-child [data-testid="column"] p {
+                margin: 0 0 0.35rem 0 !important;
+                line-height: 1.45 !important;
+            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -231,43 +435,6 @@ def generate_random_timeframe_seconds(
     if end <= start:
         end = min(upper, start + 1)
     return start, end
-
-
-import re
-
-def extract_timestamps(text: str) -> list[tuple[int, int]]:
-    """
-    Extracts all timestamps from the given text and returns them as a list of (start, end) tuples in seconds.
-    Timestamp formats supported: "0:01", "00:00", "0:00-0:15", "00:01-00:02", etc.
-    Each timestamp or range is returned as a (start, end) pair where both are in seconds.
-    For individual timestamps, start and end are the same.
-    """
-    def to_seconds(s: str) -> int:
-        """Convert a timestamp string (e.g. 0:01, 00:00:05) into total seconds."""
-        parts = s.split(":")
-        parts = [int(p) for p in parts]
-        if len(parts) == 3:
-            # HH:MM:SS
-            h, m, sec = parts
-            return h * 3600 + m * 60 + sec
-        elif len(parts) == 2:
-            # MM:SS
-            m, sec = parts
-            return m * 60 + sec
-        else:
-            raise ValueError(f"Unexpected timestamp format: {s}")
-
-    timestamp_pattern = re.compile(r'(\d{1,2}:\d{2}(?::\d{2})?)(?:-(\d{1,2}:\d{2}(?::\d{2})?))?')
-    matches = timestamp_pattern.findall(text)
-    result = []
-    for start, end in matches:
-        start_sec = to_seconds(start)
-        if end:
-            end_sec = to_seconds(end)
-            result.append((start_sec, end_sec))
-        else:
-            result.append((start_sec, start_sec))
-    return result
 
 
 def main() -> None:
@@ -392,30 +559,34 @@ def main() -> None:
                     unsafe_allow_html=True,
                 )
             else:
-                st.markdown(msg["content"])
-                if msg.get("timeframes"):
-                    msg_id = _ensure_message_id(msg)
-                    for idx, (a, b) in enumerate(msg["timeframes"], start=1):
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            render_play_button(a, b, f"{msg_id}_{idx}")
-                        with c2:
-                            if chat.get("video_bytes"):
-                                clip_bytes = build_video_clip_bytes(
-                                    chat["video_bytes"], int(a), int(b),
-                                    chat.get("video_mime") or "video/mp4",
-                                )
-                                if clip_bytes is not None:
-                                    st.download_button(
-                                        label=f"Download [{a}:{b}]",
-                                        data=clip_bytes,
-                                        file_name=f"clip_{idx}_{a}_{b}.mp4",
-                                        mime=chat.get("video_mime") or "video/mp4",
-                                        key=f"dl_{st.session_state.active_chat_id}_{msg_id}_{idx}",
-                                        use_container_width=True,
-                                    )
-                                else:
-                                    st.caption("Clip download unavailable (ffmpeg missing).")
+                msg_id = _ensure_message_id(msg)
+                content = msg.get("content") or ""
+                if msg.get("timeframes") is not None:
+                    render_reply_with_seek_links(content, msg_id)
+                    # if msg["timeframes"] and chat.get("video_bytes"):
+                    #     with st.expander("Download clip segments"):
+                    #         for idx, (a, b) in enumerate(msg["timeframes"], start=1):
+                    #             clip_bytes = build_video_clip_bytes(
+                    #                 chat["video_bytes"],
+                    #                 int(a),
+                    #                 int(b),
+                    #                 chat.get("video_mime") or "video/mp4",
+                    #             )
+                    #             if clip_bytes is not None:
+                    #                 st.download_button(
+                    #                     label=f"Download [{a}:{b}]",
+                    #                     data=clip_bytes,
+                    #                     file_name=f"clip_{idx}_{a}_{b}.mp4",
+                    #                     mime=chat.get("video_mime") or "video/mp4",
+                    #                     key=f"dl_{st.session_state.active_chat_id}_{msg_id}_{idx}",
+                    #                     use_container_width=True,
+                    #                 )
+                    #             else:
+                    #                 st.caption(
+                    #                     f"Clip [{a}:{b}] unavailable (ffmpeg missing)."
+                    #                 )
+                else:
+                    st.markdown(content)
                 if msg.get("drive_link"):
                     st.markdown(f"[Open on Google Drive]({msg['drive_link']})")
 
@@ -503,21 +674,21 @@ def main() -> None:
         else: # get the video name from dict
             fname = chat["video_name"]
 
-        session_history = chat['session_history']
+        session_history = chat.get("session_history", [])
         print(f"session history length {len(session_history)}")
-        reply, session_history = chat_with_raw_video_direct(prompt, fname, session_history)
-        
-        query_timestamps = extract_timestamps(reply)
+        # reply, session_history = chat_with_raw_video_direct(prompt, fname, session_history)
+        reply = """In this video, there is **1 white car** turning.
 
-        # print("reply: ", reply)
-        # print("=" * 50)
-        # print("session history current: ", session_history)
-        # print("=" * 50)
-        # chat['session_history'] = session_history
-        #reply = generate_random_text_response(prompt)
-        # t0, t1 = generate_random_timeframe_seconds()
-        # tf_label = f"[{t0}; {t1}]"
-        tf_label = ", ".join([f"[{a}:{b}]" for a, b in query_timestamps])
+**Clip 1**:
+- **0:00**: A white car (appears to be a Suzuki Swift) is seen turning right from the top left parking lot entrance onto the main road.
+- **0:02-0:03**: A grey SUV turns right.
+"""
+        session_history = [{'question': 'how many white car turning in this video', 'answer': 'In this video, there is 1 white car turning:\n\n1.  **00:00 - 00:04**: A white hatchback car turns left from the main road onto the side street at the intersection.'}, {'question': 'how many white car turning in this video\n', 'answer': 'In this video, there is **1 white car** turning.\n\n**Clip 1**:\n- **0:00**: A white car (appears to be a Suzuki Swift) is seen turning right from the top left parking lot entrance onto the main road.'}]
+        print(f"reply: {reply}")
+        print(f"session history: {session_history}")
+        chat["session_history"] = session_history
+
+        query_timestamps = extract_timestamps(reply)
         if reply == NOT_IN_VIDEO_RESPONSE:
             chat["messages"].append(
                 {
@@ -527,11 +698,10 @@ def main() -> None:
                 }
             )
         else:
-            # reply_with_tf = f"{reply}\n\nSuggested segment (seconds) **{tf_label}**."
             chat["messages"].append(
                 {
                     "role": "assistant",
-                    "content": "", # reply_with_tf,
+                    "content": reply,
                     "timeframes": query_timestamps,
                     "id": str(uuid.uuid4()),
                 }
