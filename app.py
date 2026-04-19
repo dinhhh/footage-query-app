@@ -17,6 +17,7 @@ from typing import Any
 import streamlit as st
 
 from drive_upload import upload_video_to_google_drive
+from core_backend.llm_pipeline import chat_with_raw_video_direct
 
 # --- Response generators (wrapped as requested) ---
 NOT_IN_VIDEO_RESPONSE = "This content does not exist in your video"
@@ -224,6 +225,7 @@ def _apply_chatgpt_css() -> None:
     )
 
 
+
 def main() -> None:
     st.set_page_config(page_title="Chat", page_icon="💬", layout="wide")
     _apply_chatgpt_css()
@@ -358,6 +360,7 @@ def main() -> None:
             chat["video_seek_sec"] = 0
             chat["video_end_sec"] = None
             chat["video_seek_generation"] = int(chat.get("video_seek_generation", 0)) + 1
+            chat["session_history"] = []
 
             up = upload_video_to_google_drive(
                 raw,
@@ -365,85 +368,52 @@ def main() -> None:
                 mime_type=mime,
                 folder_id=_drive_folder_id(),
             )
-            t0, t1 = generate_random_timeframe_seconds()
-            tf_label = f"[{t0}; {t1}]"
-            base = generate_random_text_response(prompt)
-            if up.get("ok"):
-                link = up.get("web_view_link") or up.get("web_content_link") or ""
-                if base == NOT_IN_VIDEO_RESPONSE:
-                    reply = f"{base}\n\nVideo uploaded to your Google Drive."
-                    chat["messages"].append(
-                        {
-                            "role": "assistant",
-                            "content": reply,
-                            "drive_link": link,
-                            "id": str(uuid.uuid4()),
-                        }
-                    )
-                else:
-                    reply = (
-                        f"{base}\n\n"
-                        f"Video uploaded to your Google Drive. "
-                        f"Suggested segment (seconds) **{tf_label}** — use the button below to seek."
-                    )
-                    chat["messages"].append(
-                        {
-                            "role": "assistant",
-                            "content": reply,
-                            "timeframe": (t0, t1),
-                            "drive_link": link,
-                            "id": str(uuid.uuid4()),
-                        }
-                    )
-            else:
+            # t0, t1 = generate_random_timeframe_seconds()
+            # tf_label = f"[{t0}; {t1}]"
+            if not up.get("ok"):
+
                 err = up.get("error", "Unknown error")
-                if base == NOT_IN_VIDEO_RESPONSE:
-                    reply = f"{base}\n\nDrive upload failed: {err}"
-                    chat["messages"].append(
-                        {
-                            "role": "assistant",
-                            "content": reply,
-                            "drive_link": None,
-                            "id": str(uuid.uuid4()),
-                        }
-                    )
-                else:
-                    reply = (
-                        f"{base}\n\n"
-                        f"Drive upload failed: {err}\n\n"
-                        f"Still suggesting segment **{tf_label}** for the video in this chat."
-                    )
-                    chat["messages"].append(
-                        {
-                            "role": "assistant",
-                            "content": reply,
-                            "timeframe": (t0, t1),
-                            "drive_link": None,
-                            "id": str(uuid.uuid4()),
-                        }
-                    )
-        else:
-            reply = generate_random_text_response(prompt)
-            t0, t1 = generate_random_timeframe_seconds()
-            tf_label = f"[{t0}; {t1}]"
-            if reply == NOT_IN_VIDEO_RESPONSE:
+                reply = (
+                    f"Drive upload failed: {err}\n\n"
+                    #f"Still suggesting segment **{tf_label}** for the video in this chat."
+                )
                 chat["messages"].append(
                     {
                         "role": "assistant",
                         "content": reply,
+                        #"timeframe": (t0, t1),
+                        "drive_link": None,
                         "id": str(uuid.uuid4()),
                     }
                 )
-            else:
-                reply_with_tf = f"{reply}\n\nSuggested segment (seconds) **{tf_label}**."
-                chat["messages"].append(
-                    {
-                        "role": "assistant",
-                        "content": reply_with_tf,
-                        "timeframe": (t0, t1),
-                        "id": str(uuid.uuid4()),
-                    }
-                )
+        else: # get the video name from dict
+            fname = chat["video_name"]
+
+        session_history = chat['session_history']
+        print(f"session history length {len(session_history)}")
+        reply, session_history = chat_with_raw_video_direct(prompt, fname, session_history)
+        chat['session_history'] = session_history
+        #reply = generate_random_text_response(prompt)
+        t0, t1 = generate_random_timeframe_seconds()
+        tf_label = f"[{t0}; {t1}]"
+        if reply == NOT_IN_VIDEO_RESPONSE:
+            chat["messages"].append(
+                {
+                    "role": "assistant",
+                    "content": reply,
+                    "id": str(uuid.uuid4()),
+                }
+            )
+        else:
+            reply_with_tf = f"{reply}\n\nSuggested segment (seconds) **{tf_label}**."
+            chat["messages"].append(
+                {
+                    "role": "assistant",
+                    "content": reply_with_tf,
+                    "timeframe": (t0, t1),
+                    "id": str(uuid.uuid4()),
+                }
+            )
 
         st.rerun()
 
