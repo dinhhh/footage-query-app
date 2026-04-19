@@ -668,12 +668,13 @@ def main() -> None:
             chat["video_seek_generation"] = int(chat.get("video_seek_generation", 0)) + 1
             chat["session_history"] = []
 
-            up = upload_video_to_google_drive(
-                raw,
-                filename=fname,
-                mime_type=mime,
-                folder_id=_drive_folder_id(),
-            )
+            with st.spinner("Uploading video to Google Drive…"):
+                up = upload_video_to_google_drive(
+                    raw,
+                    filename=fname,
+                    mime_type=mime,
+                    folder_id=_drive_folder_id(),
+                )
             if not up.get("ok"):
                 err = up.get("error", "Unknown error")
                 reply = f"Drive upload failed: {err}\n\n"
