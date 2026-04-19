@@ -5,3 +5,4 @@ google-auth-httplib2==0.3.0
 tomli-w>=1.0.0
 chromadb==0.4.24
 google-genai==0.3.0
+numpy==1.26.4

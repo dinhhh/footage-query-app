@@ -4,9 +4,12 @@ import subprocess
 import chromadb
 from google import genai
 from google.genai import types
+import streamlit as st
 
-os.environ["GEMINI_API_KEY"] = "" # input your API key here
-client = genai.Client()
+gemini_api_key = st.secrets.get("gemini", {}).get("api_key") or os.environ.get("GOOGLE_API_KEY")
+if gemini_api_key:
+    os.environ["GOOGLE_API_KEY"] = gemini_api_key
+client = genai.Client(api_key=gemini_api_key)
 
 # Initialize ChromaDB
 DB_PATH = "./cctv_chroma_db"

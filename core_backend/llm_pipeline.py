@@ -5,13 +5,16 @@ import chromadb
 from google import genai
 from google.genai import types
 from .video_pipeline import extract_video_clip
+import streamlit as st
 
 # ---------------------------------------------------------
 # 1. Configuration & Setup
 # ---------------------------------------------------------
-# Replace with your actual Google API key
-os.environ["GEMINI_API_KEY"] = "" # input your API key here
-client = genai.Client()
+# google.genai reads GOOGLE_API_KEY (not GEMINI_API_KEY); pass explicitly for clarity.
+gemini_api_key = st.secrets.get("gemini", {}).get("api_key") or os.environ.get("GOOGLE_API_KEY")
+if gemini_api_key:
+    os.environ["GOOGLE_API_KEY"] = gemini_api_key
+client = genai.Client(api_key=gemini_api_key)
 
 # Initialize ChromaDB
 DB_PATH = "./cctv_chroma_db"

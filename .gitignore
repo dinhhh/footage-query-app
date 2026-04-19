@@ -3,4 +3,5 @@ token.json
 drive_token_cache.json
 .streamlit/secrets.toml
 venv/
+venv312/
 __pycache__/
