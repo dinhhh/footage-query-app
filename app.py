@@ -374,7 +374,56 @@ def _new_chat_data() -> dict[str, Any]:
         "video_end_sec": None,
         "video_seek_generation": 0,
         "session_history": [],
+        "assistant_pending": False,
     }
+
+
+def _invoke_assistant_model(chat: dict[str, Any]) -> tuple[str, list[Any]]:
+    """
+    Long-running assistant call. Wrapped by st.spinner in the UI so slow runs show loading.
+    Set ILAB_DEV_LLM_DELAY_SEC=5 (optional) to simulate latency without changing this file.
+    """
+    import os
+    import time as _time
+
+    delay = os.environ.get("ILAB_DEV_LLM_DELAY_SEC", "").strip()
+    if delay:
+        _time.sleep(min(float(delay), 120.0))
+
+    prompt = chat.get("_turn_prompt", "")
+    fname = chat.get("_turn_fname")
+    session_history = chat.get("session_history", [])
+    # return chat_with_raw_video_direct(prompt, fname, session_history)
+    import time
+    time.sleep(5)
+    return """In this video, there is **1 white car** turning.
+    **Clip 1:**
+- **0:01-0:02**: A white car turns right.
+- **0:02-0:03**: A grey SUV turns right.
+- **0:04-0:05**: A white truck with green crates turns left.""", session_history
+
+
+def _append_assistant_turn_result(
+    chat: dict[str, Any], reply: str, session_history: list[Any],
+) -> None:
+    chat["session_history"] = session_history
+    chat["assistant_pending"] = False
+    chat.pop("_turn_prompt", None)
+    chat.pop("_turn_fname", None)
+    query_timestamps = extract_timestamps(reply)
+    if reply == NOT_IN_VIDEO_RESPONSE:
+        chat["messages"].append(
+            {"role": "assistant", "content": reply, "id": str(uuid.uuid4())}
+        )
+    else:
+        chat["messages"].append(
+            {
+                "role": "assistant",
+                "content": reply,
+                "timeframes": query_timestamps,
+                "id": str(uuid.uuid4()),
+            }
+        )
 
 
 def _active_chat() -> dict[str, Any]:
@@ -588,16 +637,71 @@ def main() -> None:
         file_type=["mp4", "webm", "mov", "mkv", "avi"],
     )
 
+    # Phase 1: append user message + context, rerun immediately so the bubble renders before LLM work
+    if chat_input_value and not chat.get("assistant_pending", False):
+        if isinstance(chat_input_value, str):
+            prompt = chat_input_value
+            attached_files: list[Any] = []
+        else:
+            prompt = getattr(chat_input_value, "text", "") or ""
+            attached_files = list(getattr(chat_input_value, "files", []) or [])
+        video_file = attached_files[0] if attached_files else None
+        user_text = prompt.strip() or "Sent an attachment."
+
+        if not chat["messages"]:
+            chat["title"] = (user_text[:48] + "…") if len(user_text) > 48 else user_text
+
+        chat["messages"].append(
+            {"role": "user", "content": user_text, "id": str(uuid.uuid4())}
+        )
+
+        fname: str | None = chat.get("video_name")
+        if video_file is not None:
+            raw = video_file.getvalue()
+            mime = video_file.type or "video/mp4"
+            fname = video_file.name or "upload.mp4"
+            chat["video_bytes"] = raw
+            chat["video_name"] = fname
+            chat["video_mime"] = mime
+            chat["video_seek_sec"] = 0
+            chat["video_end_sec"] = None
+            chat["video_seek_generation"] = int(chat.get("video_seek_generation", 0)) + 1
+            chat["session_history"] = []
+
+            up = upload_video_to_google_drive(
+                raw,
+                filename=fname,
+                mime_type=mime,
+                folder_id=_drive_folder_id(),
+            )
+            if not up.get("ok"):
+                err = up.get("error", "Unknown error")
+                reply = f"Drive upload failed: {err}\n\n"
+                chat["messages"].append(
+                    {
+                        "role": "assistant",
+                        "content": reply,
+                        "drive_link": None,
+                        "id": str(uuid.uuid4()),
+                    }
+                )
+                st.rerun()
+
+        chat["_turn_prompt"] = prompt
+        chat["_turn_fname"] = fname
+        chat["assistant_pending"] = True
+        st.rerun()
+
     # ── Layout ────────────────────────────────────────────────────────────────
     has_video = bool(chat.get("video_bytes"))
 
     if has_video:
         col_vid, col_chat = st.columns([5, 5], gap="large")
     else:
-        col_vid  = None
+        col_vid = None
         col_chat = st.container()
 
-    # LEFT: video panel
+    # LEFT: video only (draw before long LLM so the player stays visible while thinking)
     if has_video:
         with col_vid:
             st.subheader("Video")
@@ -608,7 +712,7 @@ def main() -> None:
             )
             st.components.v1.html(SEEKBAR_CSS + autoplay_js, height=0)
 
-    # RIGHT: chat panel
+    # RIGHT: chat + thinking spinner (spinner at bottom of this panel)
     with col_chat:
         st.title("Chat")
         st.caption("With a video + message, the reply includes playable ranges.")
@@ -655,6 +759,12 @@ def main() -> None:
                 if msg.get("drive_link"):
                     st.markdown(f"[Open on Google Drive]({msg['drive_link']})")
 
+        if chat.get("assistant_pending", False):
+            with st.spinner("🧠 Thinking…"):
+                reply, session_history = _invoke_assistant_model(chat)
+            _append_assistant_turn_result(chat, reply, session_history)
+            st.rerun()
+
     # ── Auto-scroll: inject directly into page head so it always runs ────────
     st.markdown(
         """
@@ -681,99 +791,6 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
-
-    # ── Handle input ──────────────────────────────────────────────────────────
-    if chat_input_value:
-        if isinstance(chat_input_value, str):
-            prompt = chat_input_value
-            attached_files = []
-        else:
-            prompt = getattr(chat_input_value, "text", "") or ""
-            attached_files = list(getattr(chat_input_value, "files", []) or [])
-        video_file = attached_files[0] if attached_files else None
-        user_text = prompt.strip() or "Sent an attachment."
-
-        if not chat["messages"]:
-            chat["title"] = (user_text[:48] + "…") if len(user_text) > 48 else user_text
-
-        chat["messages"].append(
-            {"role": "user", "content": user_text, "id": str(uuid.uuid4())}
-        )
-
-        if video_file is not None:
-            raw = video_file.getvalue()
-            mime = video_file.type or "video/mp4"
-            fname = video_file.name or "upload.mp4"
-            chat["video_bytes"] = raw
-            chat["video_name"] = fname
-            chat["video_mime"] = mime
-            chat["video_seek_sec"] = 0
-            chat["video_end_sec"] = None
-            chat["video_seek_generation"] = int(chat.get("video_seek_generation", 0)) + 1
-            chat["session_history"] = []
-
-            up = upload_video_to_google_drive(
-                raw,
-                filename=fname,
-                mime_type=mime,
-                folder_id=_drive_folder_id(),
-            )
-            # t0, t1 = generate_random_timeframe_seconds()
-            # tf_label = f"[{t0}; {t1}]"
-            if not up.get("ok"):
-
-                err = up.get("error", "Unknown error")
-                reply = (
-                    f"Drive upload failed: {err}\n\n"
-                    #f"Still suggesting segment **{tf_label}** for the video in this chat."
-                )
-                chat["messages"].append(
-                    {
-                        "role": "assistant",
-                        "content": reply,
-                        #"timeframe": (t0, t1),
-                        "drive_link": None,
-                        "id": str(uuid.uuid4()),
-                    }
-                )
-        else: # get the video name from dict
-            fname = chat["video_name"]
-
-        session_history = chat.get("session_history", [])
-        print(f"session history length {len(session_history)}")
-        # reply, session_history = chat_with_raw_video_direct(prompt, fname, session_history)
-        reply = """In this video, there is **1 white car** turning.
-
-**Clip 1**:
-- **0:00**: A white car (appears to be a Suzuki Swift) is seen turning right from the top left parking lot entrance onto the main road.
-- **0:02-0:03**: A grey SUV turns right.
-"""
-        session_history = [{'question': 'how many white car turning in this video', 'answer': 'In this video, there is 1 white car turning:\n\n1.  **00:00 - 00:04**: A white hatchback car turns left from the main road onto the side street at the intersection.'}, {'question': 'how many white car turning in this video\n', 'answer': 'In this video, there is **1 white car** turning.\n\n**Clip 1**:\n- **0:00**: A white car (appears to be a Suzuki Swift) is seen turning right from the top left parking lot entrance onto the main road.'}]
-        print(f"reply: {reply}")
-        print(f"session history: {session_history}")
-        chat["session_history"] = session_history
-
-        query_timestamps = extract_timestamps(reply)
-        if reply == NOT_IN_VIDEO_RESPONSE:
-            chat["messages"].append(
-                {
-                    "role": "assistant",
-                    "content": reply,
-                    "id": str(uuid.uuid4()),
-                }
-            )
-        else:
-            chat["messages"].append(
-                {
-                    "role": "assistant",
-                    "content": reply,
-                    "timeframes": query_timestamps,
-                    "id": str(uuid.uuid4()),
-                }
-            )
-
-
-        st.rerun()
 
 
 if __name__ == "__main__":
