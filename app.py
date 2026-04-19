@@ -65,8 +65,14 @@ def render_play_button(
 
 
 # Matches MM:SS, HH:MM:SS, optional ranges, optional **bold** wrappers.
+# Range separator: ASCII hyphen, en/em dash; optional spaces (e.g. 0:01-0:02 or 00:00:03 - 00:00:06).
+_RANGE_SEP = r"\s*[-\u2013\u2014]\s*"
 TIMESTAMP_PATTERN = re.compile(
-    r"(?:\*\*)?(\d{1,2}:\d{2}(?::\d{2})?)(?:-(\d{1,2}:\d{2}(?::\d{2})?))?(?:\*\*)?"
+    rf"(?:\*\*)?(\d{{1,2}}:\d{{2}}(?::\d{{2}})?)(?:{_RANGE_SEP}(\d{{1,2}}:\d{{2}}(?::\d{{2}})?))?(?:\*\*)?"
+)
+# Whole-text scan (no ** anchors); matches times inside ``**…**`` the same as test.extract_timestamps.
+_TIMESTAMP_GLOBAL_PATTERN = re.compile(
+    rf"(\d{{1,2}}:\d{{2}}(?::\d{{2}})?)(?:{_RANGE_SEP}(\d{{1,2}}:\d{{2}}(?::\d{{2}})?))?"
 )
 
 
@@ -95,7 +101,7 @@ def extract_timestamps(text: str) -> list[tuple[int, int]]:
     Single times use the same value for start and end.
     """
     out: list[tuple[int, int]] = []
-    for m in TIMESTAMP_PATTERN.finditer(text):
+    for m in _TIMESTAMP_GLOBAL_PATTERN.finditer(text):
         out.append(_match_to_seconds_range(m))
     return out
 
@@ -375,6 +381,7 @@ def _new_chat_data() -> dict[str, Any]:
         "video_seek_generation": 0,
         "session_history": [],
         "assistant_pending": False,
+        "drive_upload_pending": False,
     }
 
 
@@ -393,14 +400,15 @@ def _invoke_assistant_model(chat: dict[str, Any]) -> tuple[str, list[Any]]:
     prompt = chat.get("_turn_prompt", "")
     fname = chat.get("_turn_fname")
     session_history = chat.get("session_history", [])
-    # return chat_with_raw_video_direct(prompt, fname, session_history)
-    import time
-    time.sleep(5)
-    return """In this video, there is **1 white car** turning.
-    **Clip 1:**
-- **0:01-0:02**: A white car turns right.
-- **0:02-0:03**: A grey SUV turns right.
-- **0:04-0:05**: A white truck with green crates turns left.""", session_history
+    return chat_with_raw_video_direct(prompt, fname, session_history)
+# for testing purpose
+#     import time
+#     time.sleep(5)
+#     return """In this video, there is **1 white car** turning.
+#     **Clip 1:**
+# - **0:01-0:02**: A white car turns right.
+# - **0:02-0:03**: A grey SUV turns right.
+# - **0:04-0:05**: A white truck with green crates turns left.""", session_history
 
 
 def _append_assistant_turn_result(
@@ -476,14 +484,12 @@ def _apply_css() -> None:
                 overflow-y: auto !important;
                 padding-bottom: 10px !important;
             }
-            /* LEFT video column: no scroll, sticks to top */
+            /* LEFT video column: match chat height, no scroll (centering via st.container stretch) */
             [data-testid="stHorizontalBlock"] > div:first-child {
-                position: sticky !important;
-                top: 0 !important;
-                align-self: flex-start !important;
                 max-height: calc(100vh - 140px) !important;
                 overflow: hidden !important;
             }
+
             /* Inline timestamp “links” (tertiary seek buttons); key prefix tsseek_ */
             [class*="st-key-tsseek_"] button {
                 color: #60a5fa !important;
@@ -637,8 +643,10 @@ def main() -> None:
         file_type=["mp4", "webm", "mov", "mkv", "avi"],
     )
 
-    # Phase 1: append user message + context, rerun immediately so the bubble renders before LLM work
-    if chat_input_value and not chat.get("assistant_pending", False):
+    # Phase 1: append user message + context (defer Drive upload + LLM to later runs so spinners never fight)
+    if chat_input_value and not chat.get("assistant_pending", False) and not chat.get(
+        "drive_upload_pending", False
+    ):
         if isinstance(chat_input_value, str):
             prompt = chat_input_value
             attached_files: list[Any] = []
@@ -667,26 +675,10 @@ def main() -> None:
             chat["video_end_sec"] = None
             chat["video_seek_generation"] = int(chat.get("video_seek_generation", 0)) + 1
             chat["session_history"] = []
-
-            with st.spinner("Uploading video to Google Drive…"):
-                up = upload_video_to_google_drive(
-                    raw,
-                    filename=fname,
-                    mime_type=mime,
-                    folder_id=_drive_folder_id(),
-                )
-            if not up.get("ok"):
-                err = up.get("error", "Unknown error")
-                reply = f"Drive upload failed: {err}\n\n"
-                chat["messages"].append(
-                    {
-                        "role": "assistant",
-                        "content": reply,
-                        "drive_link": None,
-                        "id": str(uuid.uuid4()),
-                    }
-                )
-                st.rerun()
+            chat["_turn_prompt"] = prompt
+            chat["_turn_fname"] = fname
+            chat["drive_upload_pending"] = True
+            st.rerun()
 
         chat["_turn_prompt"] = prompt
         chat["_turn_fname"] = fname
@@ -705,13 +697,18 @@ def main() -> None:
     # LEFT: video only (draw before long LLM so the player stays visible while thinking)
     if has_video:
         with col_vid:
-            st.subheader("Video")
-            st.video(
-                io.BytesIO(chat["video_bytes"]),
-                format=chat.get("video_mime") or "video/mp4",
-                start_time=int(chat.get("video_seek_sec", 0)),
-            )
-            st.components.v1.html(SEEKBAR_CSS + autoplay_js, height=0)
+            with st.container(
+                height="stretch",
+                vertical_alignment="center",
+                horizontal_alignment="center",
+            ):
+                st.subheader("Video")
+                st.video(
+                    io.BytesIO(chat["video_bytes"]),
+                    format=chat.get("video_mime") or "video/mp4",
+                    start_time=int(chat.get("video_seek_sec", 0)),
+                )
+                st.components.v1.html(SEEKBAR_CSS + autoplay_js, height=0)
 
     # RIGHT: chat + thinking spinner (spinner at bottom of this panel)
     with col_chat:
@@ -760,9 +757,37 @@ def main() -> None:
                 if msg.get("drive_link"):
                     st.markdown(f"[Open on Google Drive]({msg['drive_link']})")
 
-        if chat.get("assistant_pending", False):
+        # Drive upload on its own rerun so this spinner is never replaced by Thinking…
+        if chat.get("drive_upload_pending", False) and chat.get("video_bytes"):
+            with st.spinner("Analysing video ..."):
+                up = upload_video_to_google_drive(
+                    chat["video_bytes"],
+                    filename=chat.get("video_name") or "upload.mp4",
+                    mime_type=chat.get("video_mime") or "video/mp4",
+                    folder_id=_drive_folder_id(),
+                )
+            chat["drive_upload_pending"] = False
+            if not up.get("ok"):
+                err = up.get("error", "Unknown error")
+                reply = f"Drive upload failed: {err}\n\n"
+                chat["messages"].append(
+                    {
+                        "role": "assistant",
+                        "content": reply,
+                        "drive_link": None,
+                        "id": str(uuid.uuid4()),
+                    }
+                )
+                st.rerun()
+            chat["assistant_pending"] = True
+            st.rerun()
+
+        if chat.get("assistant_pending", False) and not chat.get(
+            "drive_upload_pending", False
+        ):
             with st.spinner("🧠 Thinking…"):
                 reply, session_history = _invoke_assistant_model(chat)
+                print("reply: ", reply)
             _append_assistant_turn_result(chat, reply, session_history)
             st.rerun()
 
