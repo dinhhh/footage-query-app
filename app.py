@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import uuid
 from typing import Any
+import json
 
 import streamlit as st
 
@@ -238,6 +239,79 @@ def _clip_download_link_after_markdown(
 
 
 def render_reply_with_seek_links(reply: str, msg_id: str, chat) -> None:
+    """Show assistant reply parsed from structured JSON, rendering play buttons and descriptions."""
+    
+    # 1. Clean the string (in case the LLM wrapped the JSON in markdown code blocks)
+    clean_reply = reply.strip()
+    if clean_reply.startswith("```json"):
+        clean_reply = clean_reply[7:-3].strip()
+    elif clean_reply.startswith("```"):
+        clean_reply = clean_reply[3:-3].strip()
+
+    # 2. Parse the JSON
+    try:
+        data = json.loads(clean_reply)
+    except json.JSONDecodeError:
+        # Fallback: If it's not valid JSON for some reason, just render as raw markdown
+        st.markdown(reply)
+        return
+
+    # 3. Render the Overall Summary first
+    if "overall_summary" in data and data["overall_summary"]:
+        st.markdown(f"**Summary:** {data['overall_summary']}")
+        st.markdown("---")
+
+    # 4. Handle cases where the event wasn't found
+    if not data.get("event_found", False):
+        st.info("No specific events matching your query were found in the footage.")
+        return
+
+    # Helper function to convert "MM:SS" or "HH:MM:SS" into integer seconds
+    def to_seconds(t_str: str) -> int:
+        parts = t_str.split(':')
+        try:
+            if len(parts) == 2:
+                return int(parts[0]) * 60 + int(parts[1])
+            elif len(parts) == 3:
+                return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            return int(t_str)
+        except ValueError:
+            return 0 # Fallback for malformed time strings
+
+    # 5. Render the occurrences in a perfect two-column layout
+    occurrences = data.get("occurrences", [])
+    for ci, occ in enumerate(occurrences):
+        start_str = occ.get("start_timestamp", "00:00")
+        end_str = occ.get("end_timestamp", "00:00")
+        desc = occ.get("detailed_description", "")
+        
+        start_sec = to_seconds(start_str)
+        end_sec = to_seconds(end_str)
+        
+        # Lock in the two columns: Button on the left, Description on the right
+        cols = st.columns([15, 85], gap="small", vertical_alignment="top")
+        
+        with cols[0]:
+            label = f"▶ {start_str}"
+            render_play_button(
+                start_sec,
+                end_sec,
+                f"{msg_id}_btn_{ci}",
+                label=label
+            )
+            
+        with cols[1]:
+            # Use your existing text fragment renderer
+            _markdown_chat_fragment(
+                desc, 
+                start_sec, 
+                end_sec, 
+                chat, 
+                download_key=f"{msg_id}_desc_{ci}"
+            )
+
+
+def render_reply_with_seek_links_old(reply: str, msg_id: str, chat) -> None:
     """Show assistant reply; plain timestamps become play/seek controls (like render_play_button)."""
     reply = _neutralize_first_list_marker_line(reply)
     if not TIMESTAMP_PATTERN.search(reply):
