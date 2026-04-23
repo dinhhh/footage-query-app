@@ -131,6 +131,7 @@ Respond strictly in this format: RELEVANT HISTORY | REFINED QUERY"""
     # --- Step 5: Dynamic Trimming & Inline Loading ---
     video_parts = []
     local_clip_paths = []
+    clip_manifest = "CLIP TIME OFFSETS:\n"
     
     try:
         for i, cluster in enumerate(clusters):
@@ -139,6 +140,10 @@ Respond strictly in this format: RELEVANT HISTORY | REFINED QUERY"""
             
             safe_start = max(0.0, cluster_start - 3.0)
             clip_duration = (cluster_end - safe_start) + 3.0 
+
+            start_mm = int(safe_start // 60)
+            start_ss = int(safe_start % 60)
+            clip_manifest += f"- Clip {i+1}: Starts at absolute time {start_mm:02d}:{start_ss:02d} ({safe_start:.1f} seconds) of the original full video.\n"
             
             clip_path = f"temp_cluster_{i}_{int(time.time())}.mp4"
             local_clip_paths.append(clip_path)
@@ -154,27 +159,85 @@ Respond strictly in this format: RELEVANT HISTORY | REFINED QUERY"""
                 types.Part.from_bytes(data=video_bytes, mime_type="video/mp4")
             )
 
-        # --- Step 6: Synthesis Continuity (Using Pruned Memory) ---
-        print("🧠 Asking Gemini 2.5 Flash to synthesize an answer...")
+# --- Step 6: Synthesis Continuity (Using Pruned Memory) ---
+        print("🧠 Asking Gemini 2.5 Flash to synthesize a structured JSON answer...")
         
-        system_prompt = f"""You are an elite CCTV analysis AI. 
-You are being provided with {len(video_parts)} chronologically ordered video clips.
-Watch all the clips closely to answer the CURRENT USER QUERY.
+        json_schema = """
+        {
+          "type": "object",
+          "properties": {
+            "event_found": {
+              "type": "boolean",
+              "description": "True if the queried event is found in the provided clips, False otherwise."
+            },
+            "overall_summary": {
+              "type": "string",
+              "description": "A direct, concise answer to the user's query summarizing the findings across all clips."
+            },
+            "occurrences": {
+              "type": "array",
+              "description": "A list of specific instances where the queried event or subject appears. Can contain multiple matches per clip.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "clip_number": {"type": "integer", "description": "The sequential number of the clip (e.g., 1, 2)."},
+                  "start_timestamp": {"type": "string", "description": "The ABSOLUTE start time of the event from the beginning of the ORIGINAL full video (format MM:SS). Calculate this by taking the time the event happens in the temporary clip, and adding it to the clip's starting offset."},
+                  "end_timestamp": {"type": "string", "description": "The ABSOLUTE end time of the event from the beginning of the ORIGINAL full video (format MM:SS)."},
+                  "detailed_description": {"type": "string", "description": "Highly detailed visual description of the specific event, actors, and actions."}
+                },
+                "required": ["clip_number", "start_timestamp", "end_timestamp", "detailed_description"]
+              }
+            }
+          },
+          "required": ["event_found", "overall_summary", "occurrences"]
+        }
+        """
 
-INVESTIGATION CONTEXT (Extracted from past turns): 
+        system_prompt = f"""You are an elite CCTV analysis AI acting as the final synthesis layer in a surveillance retrieval pipeline. 
+You are being provided with {len(video_parts)} chronologically ordered video clips that have been extracted from a longer master video.
+
+{clip_manifest}
+
+YOUR MISSION:
+Watch all the clips closely and answer the CURRENT USER QUERY based STRICTLY on the visual evidence provided.
+
+INVESTIGATION CONTEXT (From past conversational turns): 
 {extracted_memory}
+* Use this context to resolve pronouns or track ongoing subjects.
 
-Use the Investigation Context to resolve any pronouns or track ongoing subjects. 
-Return when the event happens, which clip it happens in, and a detailed description."""
+RULES FOR ANALYSIS:
+1. Multiple Matches: A single clip may contain multiple distinct occurrences of the event. Log EACH occurrence as a separate object in the 'occurrences' array.
+2. No Hallucinations: If the event is NOT in the video, set "event_found" to false, leave "occurrences" empty, and state that it was not found in the "overall_summary".
+3. Timestamp Accuracy: You MUST output the ABSOLUTE timestamp relative to the VERY BEGINNING of the original full video, NOT the temporary clip. Use the CLIP TIME OFFSETS provided above. For example, if Clip 2 starts at absolute time 01:00, and an event happens 15 seconds into Clip 2, the absolute timestamp you output must be 01:15.
+
+OUTPUT FORMAT:
+You must output strictly valid JSON matching the following schema.
+SCHEMA:
+{json_schema}
+"""
 
         api_contents = video_parts + [system_prompt, f"CURRENT USER QUERY: {user_query}"]
 
+        # Enforce JSON output at the API configuration level
+        import json
         response = client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=api_contents
+            contents=api_contents,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.2 # Lower temperature for highly factual/analytical output
+            )
         )
-        final_answer = response.text
-
+        
+        try:
+            # Parse the response to ensure it's valid JSON
+            structured_response = json.loads(response.text)
+            # Dump it to a formatted string for the console (or return as dict for Streamlit)
+            final_answer = json.dumps(structured_response, indent=2)
+        except json.JSONDecodeError:
+            final_answer = f"Error: Model failed to return valid JSON. Raw output: {response.text}"
+        
+#
     except Exception as e:
         final_answer = f"Error during final visual analysis: {e}"
         
