@@ -106,75 +106,7 @@ def extract_timestamps(text: str) -> list[tuple[int, int]]:
         out.append(_match_to_seconds_range(m))
     return out
 
-
-def _segment_line(line: str) -> list[tuple[Any, ...]]:
-    """Split one line into ('text', str) and ('seek', label, a, b) pieces."""
-    segs: list[tuple[Any, ...]] = []
-    last = 0
-    for m in TIMESTAMP_PATTERN.finditer(line):
-        if m.start() > last:
-            segs.append(("text", line[last : m.start()]))
-        a, b = _match_to_seconds_range(m)
-        label = m.group(1) + (f"-{m.group(2)}" if m.group(2) else "")
-        segs.append(("seek", label, a, b))
-        last = m.end()
-    if last < len(line):
-        segs.append(("text", line[last:]))
-    return segs
-
-
-_LEADING_JUNK = re.compile(r"^[\s\u200b\u200c\u200d\ufeff]+")
-
-
-def _strip_leading_invisible(s: str) -> str:
-    """Remove spaces / ZWSP / BOM so fragments like '\\u200b- **' classify as list markup."""
-    return _LEADING_JUNK.sub("", s or "")
-
-
-def _is_leading_list_marker_only_fragment(s: str) -> bool:
-    """True when a split text chunk is only list markup (e.g. '-', '- ', '- **'), not real words."""
-    t = _strip_leading_invisible(s)
-    if not t:
-        return True
-    if re.search(r"[A-Za-z0-9]", t):
-        return False
-    if any(c in "()[]{}" for c in t):
-        return False
-    # ASCII hyphen, unicode dashes, bullets, leading * for list/emphasis
-    if not re.match(r"^[-–—•*‧·]", t):
-        return False
-    return len(t) <= 24
-
-
-def _drop_leading_list_marker_column(segs: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
-    """Remove first column when it is only '-'/bullet/bold opener so the row starts at the timestamp."""
-    if len(segs) < 2 or segs[0][0] != "text":
-        return segs
-    if _is_leading_list_marker_only_fragment(segs[0][1]):
-        return segs[1:]
-    return segs
-
-
 _WS_LINE = re.compile(r"^(\s*)")
-
-
-def _neutralize_first_list_marker_line(text: str) -> str:
-    """Hide the first markdown list bullet (-/*) so the opening line isn't a list item."""
-    lines = text.split("\n")
-    for i, line in enumerate(lines):
-        if not line.strip():
-            continue
-        m = _WS_LINE.match(line)
-        if not m:
-            continue
-        indent = m.group(1)
-        rest = line[len(indent) :]
-        if rest.startswith("- ") or rest.startswith("* "):
-            lines[i] = indent + "\u200b" + rest
-            break
-    return "\n".join(lines)
-
-
 def _markdown_chat_fragment(
     s: str,
     start_time: int | None,
@@ -311,45 +243,6 @@ def render_reply_with_seek_links(reply: str, msg_id: str, chat) -> None:
             )
 
 
-def render_reply_with_seek_links_old(reply: str, msg_id: str, chat) -> None:
-    """Show assistant reply; plain timestamps become play/seek controls (like render_play_button)."""
-    reply = _neutralize_first_list_marker_line(reply)
-    if not TIMESTAMP_PATTERN.search(reply):
-        st.markdown(reply)
-        return
-
-    for li, line in enumerate(reply.split("\n")):
-        if line == "":
-            st.markdown("")
-            continue
-        segs = _drop_leading_list_marker_column(_segment_line(line))
-        if len(segs) == 1 and segs[0][0] == "text":
-            _markdown_chat_fragment(
-                segs[0][1], None, None, chat, download_key=None,
-            )
-            continue
-        weights: list[int] = [15, 35]
-        cols = st.columns(weights, gap="small", vertical_alignment="top")
-        last_a: int | None = None
-        last_b: int | None = None
-        for ci, seg in enumerate(segs):
-            with cols[ci]:
-                if seg[0] == "text":
-                    dk = f"{msg_id}_L{li}_T{ci}" if last_a is not None else None
-                    _markdown_chat_fragment(
-                        seg[1], last_a, last_b, chat, download_key=dk,
-                    )
-                else:
-                    _, label, a, b = seg
-                    last_a, last_b = int(a), int(b)
-                    render_play_button(
-                        int(a),
-                        int(b),
-                        f"{msg_id}_L{li}_C{ci}",
-                        label=label,
-                    )
-
-
 @st.cache_data(show_spinner=False)
 def build_video_clip_bytes(
     video_bytes: bytes, start_sec: int, end_sec: int, mime_type: str
@@ -382,41 +275,6 @@ def build_video_clip_bytes(
                 return f.read()
         except Exception:
             return None
-
-
-def generate_random_text_response(user_message: str) -> str:
-    templates = [
-        'Interesting point about: "{msg}". Here is a random thought: the weather is computational.',
-        'You said "{msg}". I\'ll reply with something arbitrary: seven platypuses in a trench coat.',
-        "Acknowledged: {msg}. Random line: static on the radio, but friendly.",
-        'On "{msg}": a random sentence — the elevator music was written in binary.',
-        "Re: {msg} — imagine a cloud made of toast. That's the vibe.",
-        NOT_IN_VIDEO_RESPONSE,
-    ]
-    selected = random.choice(templates)
-    if selected == NOT_IN_VIDEO_RESPONSE:
-        return selected
-    return selected.format(msg=user_message.strip() or "(empty message)")
-
-
-def generate_random_timeframes(
-    max_duration_sec: int = 30,
-    window_max: int = 5,
-    max_clips: int = 5,
-) -> list[tuple[int, int]]:
-    """Generate 1-5 random time ranges."""
-    upper = max(10, max_duration_sec)
-    num_clips = random.randint(1, min(max_clips, 5))
-    ranges: list[tuple[int, int]] = []
-
-    for _ in range(num_clips):
-        start = random.randint(0, max(0, upper - 2))
-        end = min(upper, start + random.randint(1, window_max))
-        if end <= start:
-            end = min(upper, start + 1)
-        ranges.append((start, end))
-
-    return sorted(ranges, key=lambda x: x[0])[:max_clips]
 
 
 def _drive_folder_id() -> str | None:
@@ -804,28 +662,6 @@ def main() -> None:
                 content = msg.get("content") or ""
                 if msg.get("timeframes") is not None:
                     render_reply_with_seek_links(content, msg_id, chat)
-                    # if msg["timeframes"] and chat.get("video_bytes"):
-                    #     with st.expander("Download clip segments"):
-                    #         for idx, (a, b) in enumerate(msg["timeframes"], start=1):
-                    #             clip_bytes = build_video_clip_bytes(
-                    #                 chat["video_bytes"],
-                    #                 int(a),
-                    #                 int(b),
-                    #                 chat.get("video_mime") or "video/mp4",
-                    #             )
-                    #             if clip_bytes is not None:
-                    #                 st.download_button(
-                    #                     label=f"Download [{a}:{b}]",
-                    #                     data=clip_bytes,
-                    #                     file_name=f"clip_{idx}_{a}_{b}.mp4",
-                    #                     mime=chat.get("video_mime") or "video/mp4",
-                    #                     key=f"dl_{st.session_state.active_chat_id}_{msg_id}_{idx}",
-                    #                     use_container_width=True,
-                    #                 )
-                    #             else:
-                    #                 st.caption(
-                    #                     f"Clip [{a}:{b}] unavailable (ffmpeg missing)."
-                    #                 )
                 else:
                     st.markdown(content)
                 if msg.get("drive_link"):
