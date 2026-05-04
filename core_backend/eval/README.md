@@ -560,7 +560,6 @@ Short explanation from the local LLM judge.
 
 - The evaluation only uses annotations as ground truth after inference.
 - Put both the raw video files and `UCFCrime_Test.json` under `core_backend/Data/`.
-- Do not pass `gold_start` and `gold_end` into the product model as part of the answer generation process.
 - If `Evaluation cases: 0`, check whether local video names match annotation keys.
 - If Ollama fails, check that the model is installed with `ollama list`.
 - If Gemini quota errors appear, the failing part is still using API somewhere in the product pipeline.
