@@ -1,36 +1,34 @@
-# Evaluation Module README
-
-This README is for the **evaluation module only**. It explains how to run the evaluation pipeline for the Hybrid Multimodal RAG video system, not the full Streamlit application.
-
-The evaluation pipeline checks whether the system can answer video-based questions correctly by comparing the final model output against the UCF-Crime annotation ground truth. It supports local Ollama models for question generation and LLM-as-a-Judge evaluation, while the main video-answering pipeline can still use Gemini if your `llm_pipeline.py` is configured that way.
-
----
+# Evaluation README
 
 ## 1. Overview
 
-The evaluation workflow is:
+This README is for the **evaluation module only**.
+
+The evaluation pipeline measures how well the video RAG system can answer event-specific questions using raw video input, then scores the generated answer against the human annotation ground truth.
+
+The evaluation flow is:
 
 ```text
-UCF-Crime annotation
+local video + annotation event
         ↓
-Generate user questions from each annotation event
+generate or use user question
         ↓
-Run chat_with_raw_video_direct() on the raw video
+run product inference through chat_with_raw_video_direct
         ↓
-Parse the model answer into clean CSV fields
+parse model answer into clean CSV fields
         ↓
-Use local Ollama LLM-as-a-Judge to score the answer
+judge output with local Ollama LLM-as-a-Judge
         ↓
-Export evaluation_outputs/video_eval_rows.csv
+export evaluation_outputs/video_eval_rows.csv
 ```
 
-The annotation file is used only as the **ground-truth baseline** for evaluation. It should not be used by the product pipeline during normal inference, except for generating evaluation questions.
+Important: the annotation file is used only as the **ground-truth baseline for evaluation**. It should not be used by the actual product inference pipeline to answer the question.
 
 ---
 
 ## 2. Folder Structure
 
-Current evaluation folder:
+The evaluation code is inside:
 
 ```text
 core_backend/eval/
@@ -47,32 +45,113 @@ core_backend/eval/
 └── video_eval.py
 ```
 
-Suggested responsibility of each file:
+Main files:
 
-| File | Purpose |
-|---|---|
-| `video_eval.py` | Main entry point for running evaluation |
-| `llm_annotation.py` | Loads UCF-Crime annotations and builds evaluation cases |
-| `eval_question_generator.py` | Generates user questions from annotation events using local Ollama |
-| `eval_product_parser.py` | Parses product output into clean fields for CSV |
-| `llm_judge.py` | Runs local Ollama LLM-as-a-Judge scoring |
-| `eval_csv.py` | Writes Excel-safe CSV output |
-| `eval_metrics.py` | Computes evaluation summary metrics |
-| `eval_utils.py` | Shared helper functions |
-| `gemini_key_manager.py` | Manages Gemini keys if Gemini is still used in the product pipeline |
-| `check_gemini_keys.py` | Utility for checking Gemini key availability |
+```text
+video_eval.py
+```
+
+Runs the full evaluation pipeline.
+
+```text
+llm_annotation.py
+```
+
+Loads annotation data, matches local videos, and creates evaluation cases.
+
+```text
+llm_judge.py
+```
+
+Runs local Ollama LLM-as-a-Judge.
+
+```text
+eval_csv.py
+```
+
+Exports an Excel-safe CSV file and prints summary metrics.
+
+```text
+eval_question_generator.py
+```
+
+Generates user questions from annotation events using a local Ollama model.
+
+```text
+eval_product_parser.py
+```
+
+Parses the product output into cleaner fields for the CSV.
+
+```text
+check_gemini_keys.py
+```
+
+Checks whether Gemini API keys are still usable.
 
 ---
 
-## 3. Environment Setup
+## 3. Data and Annotation Placement
 
-From the project root:
+Put the raw video files and annotation file under:
 
-```bash
-cd footage-query-app
+```text
+core_backend/Data/
 ```
 
-Create and activate a virtual environment if needed:
+Expected structure:
+
+```text
+core_backend/
+└── Data/
+    ├── Testing_Normal_Videos_Anomaly/
+    │   ├── Shoplifting041_x264.mp4
+    │   ├── Shoplifting042_x264.mp4
+    │   └── ...
+    └── UCFCrime_Test.json
+```
+
+The evaluation code recursively searches for video files inside `core_backend/Data/`, so videos can be inside subfolders such as:
+
+```text
+core_backend/Data/Testing_Normal_Videos_Anomaly/
+```
+
+The annotation file should be placed here:
+
+```text
+core_backend/Data/UCFCrime_Test.json
+```
+
+The video filename should match the annotation key. For example:
+
+```text
+Shoplifting041_x264.mp4
+```
+
+should match an annotation key like:
+
+```text
+Shoplifting041_x264
+```
+
+The annotation file is expected to include fields similar to:
+
+```json
+{
+  "Shoplifting041_x264": {
+    "duration": 120.0,
+    "timestamps": [[10.0, 20.0]],
+    "sentences": ["A person takes an item from the shop."]
+  }
+}
+```
+
+---
+
+## 4. Environment Setup
+
+Create and activate a virtual environment:
 
 ```bash
 python3 -m venv .venv
@@ -92,10 +171,9 @@ pip install spacy
 python3 -m spacy download en_core_web_sm
 ```
 
-Make sure FFmpeg is installed because the evaluator uses `ffprobe` to read video duration:
+Make sure FFmpeg is installed because the evaluation uses `ffprobe` to get video duration:
 
 ```bash
-ffmpeg -version
 ffprobe -version
 ```
 
@@ -107,44 +185,55 @@ brew install ffmpeg
 
 ---
 
-## 4. Setup Ollama
+## 5. Setup Ollama
 
-The evaluation uses local Ollama models for question generation and LLM-as-a-Judge.
-
-Check installed models:
+Check available local models:
 
 ```bash
 ollama list
 ```
 
-Example available models:
+Example models used in this project:
 
 ```text
 llama3:latest
 gemma4:latest
 ```
 
-Pull a model if needed:
+If a model is missing, pull it:
 
 ```bash
 ollama pull llama3
 ```
 
-Make sure Ollama is running:
+or:
 
 ```bash
-ollama serve
+ollama pull gemma4
 ```
 
-If Ollama is already running, this command may show a port-in-use message. That is fine if `ollama list` works.
+The evaluation uses Ollama for:
+
+```text
+question generation
+local LLM-as-a-Judge
+```
+
+Default Ollama URL:
+
+```text
+http://localhost:11434/api/chat
+```
 
 ---
 
-## 5. Setup API Key if the Pipeline Still Uses Gemini
+## 6. Setup API Key if the Product Pipeline Still Uses Gemini
 
-The evaluation judge and question generator can run locally with Ollama, but your product pipeline may still call Gemini inside `llm_pipeline.py` or another backend file.
+The evaluation judge can run locally with Ollama.
 
-If your video-answering pipeline still uses Gemini, add your key to:
+However, if `llm_pipeline.py`, `video_pipeline.py`, or embedding code still calls Gemini, then you still need a Gemini API key.
+
+You can store it in:
 
 ```text
 .streamlit/secrets.toml
@@ -153,185 +242,326 @@ If your video-answering pipeline still uses Gemini, add your key to:
 Example:
 
 ```toml
-GOOGLE_API_KEY="YOUR_KEY_HERE"
+GOOGLE_API_KEY="YOUR_API_KEY"
 ```
 
-Also make sure `.streamlit/secrets.toml` is included in `.gitignore`:
+or set it in the terminal:
 
-```gitignore
-.streamlit/secrets.toml
+```bash
+export GOOGLE_API_KEY="YOUR_API_KEY"
 ```
 
-If the product pipeline is fully local, this Gemini key setup may not be needed.
+Some code may also look for:
+
+```bash
+export GEMINI_API_KEY="YOUR_API_KEY"
+```
 
 ---
 
-## 6. Run a 1-Video Test
+## 7. Check Whether Gemini Keys Still Work
 
-Run one video and one event first:
+If you want to check whether the Gemini API keys are still usable, run:
+
+```bash
+python3 -m core_backend.eval.check_gemini_keys
+```
+
+This is useful before running any pipeline component that still depends on Gemini.
+
+If the output shows quota or authentication errors, update or rotate the key before running the API-dependent part.
+
+---
+
+## 8. Run Test on 1 Video
+
+Run 1 video and 1 event first:
 
 ```bash
 python3 -m core_backend.eval.video_eval -n 1 -e 1
 ```
 
-Using a specific local judge model:
+Use a specific local judge model:
 
 ```bash
 python3 -m core_backend.eval.video_eval -n 1 -e 1 -m gemma4:latest
 ```
 
-This is the recommended first test before running the full evaluation.
+or:
+
+```bash
+python3 -m core_backend.eval.video_eval -n 1 -e 1 -m llama3:latest
+```
 
 ---
 
-## 7. CLI Arguments
+## 9. CLI Arguments
 
-The main script is:
+The main evaluation command is:
 
 ```bash
 python3 -m core_backend.eval.video_eval
 ```
 
-Available arguments:
+Useful arguments:
 
-| Argument | Meaning |
-|---|---|
-| `-n`, `--limit-videos` | Limit the number of videos to evaluate |
-| `-e`, `--limit-events` | Limit the number of annotation events per video |
-| `-q`, `--query` | Custom query. If omitted, local `llama3` generates questions from each annotation event |
-| `--questions-per-event` | Number of locally generated questions per annotation event |
-| `--append-output` | Append rows to the existing CSV instead of overwriting it |
-| `-m`, `--judge-model` | Local Ollama model used as LLM-as-a-Judge |
-| `--question-generator-model` | Local Ollama model used to generate user questions |
-| `--ollama-url` | Ollama API endpoint. Default is `http://localhost:11434/api/chat` |
-| `--sleep-sec` | Delay between evaluation cases |
-
-Example with generated questions:
-
-```bash
-python3 -m core_backend.eval.video_eval \
-  -n 1 \
-  -e 1 \
-  --questions-per-event 3 \
-  -m gemma4:latest \
-  --question-generator-model llama3:latest
+```text
+-n, --limit-videos
 ```
 
-Example with a custom query:
+Limit the number of videos to evaluate.
+
+Example:
 
 ```bash
-python3 -m core_backend.eval.video_eval \
-  -n 1 \
-  -e 1 \
-  -q "Is there any suspicious activity in this video?" \
-  -m gemma4:latest
+python3 -m core_backend.eval.video_eval -n 1
 ```
 
-Example appending new results:
+```text
+-e, --limit-events
+```
+
+Limit the number of annotation events per video.
+
+Example:
 
 ```bash
-python3 -m core_backend.eval.video_eval \
-  -n 5 \
-  -e 2 \
-  --append-output
+python3 -m core_backend.eval.video_eval -n 1 -e 1
 ```
 
----
-
-## 8. Run All Videos
-
-Run the full evaluation:
-
-```bash
-python3 -m core_backend.eval.video_eval
+```text
+-q, --query
 ```
 
-Run all with a specific judge model:
+Use a custom query.
+
+If omitted, local `llama3` generates questions from each annotation event.
+
+```text
+--questions-per-event
+```
+
+Number of local Llama-generated questions per annotation event.
+
+```text
+--append-output
+```
+
+Append rows to the existing CSV instead of overwriting it.
+
+```text
+-m, --judge-model
+```
+
+Local Ollama model used as LLM-as-a-Judge.
+
+Example:
 
 ```bash
 python3 -m core_backend.eval.video_eval -m gemma4:latest
 ```
 
-Run all with 3 generated questions per event:
-
-```bash
-python3 -m core_backend.eval.video_eval \
-  --questions-per-event 3 \
-  -m gemma4:latest \
-  --question-generator-model llama3:latest
+```text
+--question-generator-model
 ```
 
-The full run may take a long time because each evaluation case can involve:
+Local Ollama model used to generate user questions.
 
 ```text
-video retrieval / answer generation
-+ local question generation
-+ local LLM judge scoring
+--ollama-url
+```
+
+Ollama API endpoint. Default:
+
+```text
+http://localhost:11434/api/chat
+```
+
+```text
+--sleep-sec
+```
+
+Sleep time between evaluation cases.
+
+---
+
+## 10. Run All Videos
+
+Run all matched videos and all annotation events:
+
+```bash
+python3 -m core_backend.eval.video_eval
+```
+
+Run all using `gemma4:latest` as judge:
+
+```bash
+python3 -m core_backend.eval.video_eval -m gemma4:latest
+```
+
+Run all and append results to the existing CSV:
+
+```bash
+python3 -m core_backend.eval.video_eval --append-output
 ```
 
 ---
 
-## 9. Output CSV
+## 11. Output CSV
 
-The evaluation exports:
+The evaluation output is saved to:
 
 ```text
 evaluation_outputs/video_eval_rows.csv
 ```
 
-The CSV is written in an Excel-safe format:
+The CSV is Excel-safe:
 
+```text
 - UTF-8 with BOM
 - quoted fields
-- line breaks inside cells removed
-- long JSON fields removed or simplified
+- no multiline cells
+- model output split into separate columns
+```
 
 ---
 
-## 10. Evaluation Column Meaning
+## 12. Evaluation Columns
 
-| Column | Meaning |
-|---|---|
-| `video_id` | Video identifier matched with the annotation file |
-| `video_duration_seconds` | Full video duration from `ffprobe` |
-| `event_index` | Index of the annotation event in the video |
-| `user_query` | Query sent to the video system |
-| `question_type` | Type/category of generated question, if enabled |
-| `gold_start` | Ground-truth event start time |
-| `gold_end` | Ground-truth event end time |
-| `annotation_answer` | Human annotation description |
-| `model_answer_summary` | Cleaned final answer from the video system |
-| `model_qa_question` | Question stored in the product chat history |
-| `model_qa_answer_summary` | Cleaned answer stored in the product chat history |
-| `model_occurrence_count` | Number of occurrences returned by the product |
-| `model_first_occurrence_start` | First predicted occurrence start time |
-| `model_first_occurrence_end` | First predicted occurrence end time |
-| `model_first_occurrence_description` | Description of first predicted occurrence |
-| `accuracy_relevance_score` | Judge score for semantic event correctness |
-| `hallucination_score` | Judge score for unsupported/invented details |
-| `temporal_correctness_score` | Judge score for time alignment |
-| `annotation_has_human` | Whether the annotation mentions a human |
-| `model_has_human` | Whether the model answer mentions a human |
-| `human_match` | Whether annotation/model agree on human presence |
-| `annotation_has_action` | Whether the annotation mentions an action |
-| `model_has_action` | Whether the model answer mentions an action |
-| `action_match` | Whether annotation/model agree on action presence |
-| `event_found` | Whether the judge believes the event was correctly found |
-| `overall_pass` | Final pass/fail judgement |
-| `latency_seconds` | End-to-end product inference time |
-| `judge_explanation` | Short explanation from the judge |
+Main columns:
+
+```text
+video_id
+```
+
+The video identifier matched from the local file and annotation key.
+
+```text
+video_duration_seconds
+```
+
+Total video duration extracted using `ffprobe`.
+
+```text
+event_index
+```
+
+The index of the annotation event inside the video.
+
+```text
+user_query
+```
+
+The question sent to the product pipeline.
+
+```text
+gold_start
+gold_end
+```
+
+Ground-truth temporal range from the annotation file.
+
+```text
+annotation_answer
+```
+
+Human annotation event description.
+
+```text
+model_answer_summary
+```
+
+Cleaned final model answer used for judging.
+
+```text
+model_qa_question
+model_qa_answer_summary
+```
+
+Question and answer parsed from the product chat history if available.
+
+```text
+model_occurrence_count
+```
+
+Number of occurrences returned by the product output.
+
+```text
+model_first_occurrence_start
+model_first_occurrence_end
+model_first_occurrence_description
+```
+
+First predicted event occurrence extracted from the model output if available.
+
+```text
+accuracy_relevance_score
+```
+
+Score from 0 to 5. Measures whether the model answer identifies the correct event.
+
+```text
+hallucination_score
+```
+
+Score from 0 to 5. Higher is better.
+
+5 means no hallucination, 0 means mostly unsupported or invented.
+
+```text
+temporal_correctness_score
+```
+
+Score from 0 to 5. Measures whether the answer aligns with the correct time range.
+
+```text
+annotation_has_human
+model_has_human
+human_match
+```
+
+spaCy-based human/person detection and comparison.
+
+```text
+annotation_has_action
+model_has_action
+action_match
+```
+
+spaCy-based action/activity detection and comparison.
+
+```text
+event_found
+```
+
+Whether the judge believes the system found the target event.
+
+```text
+overall_pass
+```
+
+Final pass/fail judgement.
+
+```text
+latency_seconds
+```
+
+End-to-end product inference time.
+
+```text
+judge_explanation
+```
+
+Short explanation from the local LLM judge.
 
 ---
 
-## 11. Notes
+## 13. Notes
 
-- This README describes only the evaluation pipeline in `core_backend/eval/`.
-- The annotation file is used as ground truth for evaluation.
-- If no custom query is provided, questions are generated from each annotation event.
-- The generated question should not include the ground-truth timestamp.
-- If `Evaluation cases: 0`, check whether local video names match the annotation keys.
-- If Ollama fails, check `ollama list` and confirm the model name is correct.
-- If the CSV looks broken in Excel, regenerate it with the latest `eval_csv.py`.
-- Run `-n 1 -e 1` before running all videos.
-- For a full run, expect longer processing time because each event/question needs product inference and judge scoring.
-
+- The evaluation only uses annotations as ground truth after inference.
+- Put both the raw video files and `UCFCrime_Test.json` under `core_backend/Data/`.
+- Do not pass `gold_start` and `gold_end` into the product model as part of the answer generation process.
+- If `Evaluation cases: 0`, check whether local video names match annotation keys.
+- If Ollama fails, check that the model is installed with `ollama list`.
+- If Gemini quota errors appear, the failing part is still using API somewhere in the product pipeline.
+- If the CSV looks broken in Excel, use the latest `eval_csv.py`, which removes line breaks inside cells and quotes all fields.
