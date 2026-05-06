@@ -12,10 +12,10 @@ if gemini_api_key:
 client = genai.Client(api_key=gemini_api_key)
 
 # Initialize ChromaDB
-DB_PATH = "./cctv_chroma_db"
+DB_PATH = "./cctv_chroma_db_v1"
 chroma_client = chromadb.PersistentClient(path=DB_PATH)
 # We use a new collection name to avoid mixing with any old text-based vectors
-collection = chroma_client.get_or_create_collection(name="direct_video_vectors")
+collection = chroma_client.get_or_create_collection(name="direct_video_vectors_v1")
 dimension = 768
 
 # ---------------------------------------------------------
@@ -54,6 +54,15 @@ def ingest_raw_video_direct(video_path, chunk_duration=15.0):
     chunk_idx = 0
     
     while current_sec < duration:
+        # Check if the ID exists in the collection then skip adding it again
+        target_id = f"{video_id}_chunk_{chunk_idx}"
+        existing = collection.get(ids=[target_id])
+        if len(existing['ids']) > 0:
+            print(f"Skipping: {target_id} already exists.")
+            current_sec += chunk_duration
+            chunk_idx += 1
+            continue
+        
         end_sec = min(current_sec + chunk_duration, duration)
         clip_path = f"temp_ingest_{chunk_idx}.mp4"
         

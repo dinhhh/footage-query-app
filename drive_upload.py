@@ -182,44 +182,55 @@ def upload_video_to_google_drive(
     with open(output_filename, "wb") as f:
         f.write(file_bytes)
     ingest_raw_video_direct(output_filename, chunk_duration= 45)
-    creds = get_drive_credentials()
-    if creds is None:
-        return {
-            "ok": False,
-            "error": (
-                "Drive not authorized. Add [google_drive] credentials_json and token_json "
-                "to .streamlit/secrets.toml, or run `python setup_drive_auth.py`, then retry."
-            ),
-        }
 
-    try:
-        service = build("drive", "v3", credentials=creds, cache_discovery=False)
-        file_metadata: dict[str, Any] = {"name": filename}
-        if folder_id:
-            file_metadata["parents"] = [folder_id]
+    # temporary comment upload video to drive
+    # to check performances
 
-        media = MediaIoBaseUpload(
-            io.BytesIO(file_bytes),
-            mimetype=mime_type,
-            resumable=True,
-        )
-        created = (
-            service.files()
-            .create(
-                body=file_metadata,
-                media_body=media,
-                fields="id, name, mimeType, webViewLink, webContentLink",
-                supportsAllDrives=True,
-            )
-            .execute()
-        )
+    # creds = get_drive_credentials()
+    # if creds is None:
+    #     return {
+    #         "ok": False,
+    #         "error": (
+    #             "Drive not authorized. Add [google_drive] credentials_json and token_json "
+    #             "to .streamlit/secrets.toml, or run `python setup_drive_auth.py`, then retry."
+    #         ),
+    #     }
 
-        return {
-            "ok": True,
-            "file_id": created.get("id"),
-            "name": created.get("name"),
-            "web_view_link": created.get("webViewLink"),
-            "web_content_link": created.get("webContentLink"),
-        }
-    except Exception as e:  # noqa: BLE001 — surface any API error to the UI
-        return {"ok": False, "error": str(e)}
+    # try:
+    #     service = build("drive", "v3", credentials=creds, cache_discovery=False)
+    #     file_metadata: dict[str, Any] = {"name": filename}
+    #     if folder_id:
+    #         file_metadata["parents"] = [folder_id]
+
+    #     media = MediaIoBaseUpload(
+    #         io.BytesIO(file_bytes),
+    #         mimetype=mime_type,
+    #         resumable=True,
+    #     )
+    #     created = (
+    #         service.files()
+    #         .create(
+    #             body=file_metadata,
+    #             media_body=media,
+    #             fields="id, name, mimeType, webViewLink, webContentLink",
+    #             supportsAllDrives=True,
+    #         )
+    #         .execute()
+    #     )
+
+    #     return {
+    #         "ok": True,
+    #         "file_id": created.get("id"),
+    #         "name": created.get("name"),
+    #         "web_view_link": created.get("webViewLink"),
+    #         "web_content_link": created.get("webContentLink"),
+    #     }
+    # except Exception as e:  # noqa: BLE001 — surface any API error to the UI
+    #     return {"ok": False, "error": str(e)}
+
+    # fake return success
+    return {
+                "ok": True,
+                "error": None,
+                "drive_link": None,
+            }

@@ -17,10 +17,10 @@ if gemini_api_key:
 client = genai.Client(api_key=gemini_api_key)
 
 # Initialize ChromaDB
-DB_PATH = "./cctv_chroma_db"
+DB_PATH = "./cctv_chroma_db_v1"
 chroma_client = chromadb.PersistentClient(path=DB_PATH)
 # We use a new collection name to avoid mixing with any old text-based vectors
-collection = chroma_client.get_or_create_collection(name="direct_video_vectors")
+collection = chroma_client.get_or_create_collection(name="direct_video_vectors_v1")
 dimension = 768
 
 # ---------------------------------------------------------
@@ -101,7 +101,7 @@ Respond strictly in this format: RELEVANT HISTORY | REFINED QUERY"""
     print("🔍 Searching Vector Database for top matches...")
     results = collection.query(
         query_embeddings=[user_vector],
-        n_results=5, 
+        n_results=2, 
         where={"video_id": video_id}
     )
     
